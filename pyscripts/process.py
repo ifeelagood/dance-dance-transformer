@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 import os
 import json
 import argparse
@@ -45,7 +43,7 @@ def process_simfile(simfile_obj):
     charts = []
     # iterate through charts
     for chart in simfile_obj.charts:
-        # check if chart tpye is valid
+        # check if chart type is valid
         if chart.stepstype not in CHART_TYPES:
             continue
     
@@ -63,8 +61,9 @@ def process_simfile(simfile_obj):
         phase = []
         timings = []
 
+        # skip notes that are not taps, holds, or rolls.
         for note in time_notes(note_data, timing_data):
-            # skip notes that are not taps, holds, or rolls.
+            
             if note.note_type not in NOTES:
                 continue
 
@@ -73,8 +72,6 @@ def process_simfile(simfile_obj):
             timings.append(note.time)
             beats.append(note.beat)
             
-    
-
 
 def process_song(root, path):
     """Process the song at the given path"""
@@ -89,17 +86,17 @@ def process_song(root, path):
     # open the simfile
     simfile_obj, simfile_name = simfile.opendir(os.path.join(root, path))
 
-
-
     # process the simfile
     process_simfile(simfile_obj)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process stepmania songs")
-    parser.add_argument('path', metavar='PATH', type=str, help="Path to directory containing songs")
-    args = parser.parse_args()
 
+def process_pack(path):
     # process all songs in the given directory
-    for root, dirs, files in os.walk(args.path):
+    for root, dirs, files in os.walk(path):
         for d in dirs:
             process_song(root, d)
+    
+
+
+if __name__ == "__main__":
+    process_pack(r"data\raw\fraxtil")

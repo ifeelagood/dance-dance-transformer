@@ -53,11 +53,3 @@ def extract_pack(path):
         # if the directory is not a song, remove it
         if not is_song(dir_path):
             shutil.rmtree(dir_path)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extracts and flattens stepmania song zip files")
-    parser.add_argument('path', metavar='PATH', type=str, help="Path to directory containing zip files")
-
-    args = parser.parse_args()
-
-    extract_pack(args.path)
