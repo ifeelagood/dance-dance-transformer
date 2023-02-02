@@ -37,9 +37,9 @@ def prepare(args):
         
     # proccess
     print("Processing...")
-    for pack in PACKS.keys():
-        process_pack(args.data_dir / "raw" / pack)
-
+    packs = list(packs.keys())
+    process_packs(packs, data_dir=args.data_dir)
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=pathlib.Path, default="data", help="Path to store data.")
