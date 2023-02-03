@@ -13,3 +13,5 @@ with open("config.json") as f:
 for k, v in config.paths.__dict__.items():
     config.paths.__dict__[k] = pathlib.Path(v)
 
+# set config.dataset.urls to a dict of lists
+config.dataset.urls = config.dataset.urls.__dict__
