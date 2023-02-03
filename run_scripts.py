@@ -42,6 +42,10 @@ def unpack_script(args):
         t.join()
 
 def process_script(args):
+    # create wav directory
+    if not config.paths.wav.exists():
+        config.paths.wav.mkdir(parents=True)
+    
     process_packs(config)
 
 def all(args):
