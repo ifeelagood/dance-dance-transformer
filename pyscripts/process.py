@@ -27,7 +27,7 @@ def locate_audio(song_path : pathlib.Path, return_extension : bool = True) -> tu
                 return (song_path / file, ext) if return_extension else (song_path / file)
 
 
-def process_charts(config, simfile_obj, pack_name, wav_path):
+def process_charts(config, simfile_obj, pack_name, wav_path, num_samples):
     """Process the given simfile object into a list of charts"""
 
     charts = []
@@ -75,11 +75,12 @@ def process_charts(config, simfile_obj, pack_name, wav_path):
             "offset": simfile_obj.offset,
             "bpms": bpms,
             "pack": pack_name,
-            "wav": wav_path.name,
             "actions": actions,
             "columns": columns,
             "beats": beats,
             "timings": timings,
+            "wav": wav_path.name,
+            "samples": num_samples
         }
         
         # append to charts
@@ -104,6 +105,9 @@ def process_song(config, pack_name, song_name):
     wav.set_frame_rate(config.audio.sample_rate)
     wav.set_channels(1)
     
+    # get number of samples
+    num_samples = len(wav.get_array_of_samples())
+
     # export wav to export directory
     wav_path = config.paths.wav / audio_path.with_suffix(".wav").name
     wav.export(wav_path, format="wav")
@@ -112,7 +116,7 @@ def process_song(config, pack_name, song_name):
     simfile_obj, simfile_name = simfile.opendir(song_path)
 
     # process charts
-    processed_charts = process_charts(config, simfile_obj, pack_name, wav_path)
+    processed_charts = process_charts(config, simfile_obj, pack_name, wav_path, num_samples)
     return processed_charts
 
 
