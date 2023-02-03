@@ -13,7 +13,12 @@ from config import config
 def download_script(args):
     download_threads = []
     for pack, urls in config.dataset.urls.items():
-        pack_dir = args.data_dir / "raw" / pack
+        pack_dir = config.paths.raw / pack
+
+        # create pack dir
+        if not pack_dir.exists():
+            pack_dir.mkdir(parents=True)
+
         for url in urls:
             t = threading.Thread(target=download, args=(url, pack_dir))
             t.start()
@@ -28,10 +33,9 @@ def unpack_script(args):
     extract_threads = []
     for pack in config.dataset.packs:
         pack_dir = config.paths.raw / pack
-        for f in pack_dir.iterdir():
-            t = threading.Thread(target=unzip, args=(f, pack_dir))
-            t.start()
-            extract_threads.append(t)
+        t = threading.Thread(target=unpack, args=(pack_dir,))
+        t.start()
+        extract_threads.append(t)
 
     # wait for extractions to complete
     for t in extract_threads:
