@@ -70,9 +70,9 @@ def process_charts(config, simfile_obj, pack_name, wav_path, num_samples):
         new_chart = {
             "title": simfile_obj.title,
             "difficulty": chart.difficulty.lower(),
-            "samplestart": simfile_obj.samplestart,
-            "samplelength": simfile_obj.samplelength,
-            "offset": simfile_obj.offset,
+            "samplestart": float(simfile_obj.samplestart),
+            "samplelength": float(simfile_obj.samplelength)s,
+            "offset": float(simfile_obj.offset),
             "bpms": bpms,
             "pack": pack_name,
             "actions": actions,
