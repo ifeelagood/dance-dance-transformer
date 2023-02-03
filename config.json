@@ -1,5 +1,13 @@
 {
+    "paths": {
+        "data": "data",
+        "raw": "data/raw",
+        "wav": "data/wav",
+        "charts": "data/charts.json"
+    },
+
     "dataset": {
+
         "packs": ["fraxtil", "itg"],
 
         "urls": {
