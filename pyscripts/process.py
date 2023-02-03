@@ -18,13 +18,13 @@ AUDIO_EXTENSIONS = (".wav", ".ogg", ".mp3")
 NOTES = (NoteType.TAP, NoteType.HOLD_HEAD, NoteType.TAIL, NoteType.ROLL_HEAD)
 
 
-def locate_audio(song_path : pathlib.Path, return_extension : bool = True) -> tuple:
+def locate_audio(song_path : pathlib.Path) -> pathlib.Path:
     """Locate audio file at the given path"""
 
     for file in os.listdir(song_path):
         for ext in AUDIO_EXTENSIONS:
             if file.endswith(ext):
-                return (song_path / file, ext) if return_extension else (song_path / file)
+                return song_path / file
 
 
 def process_charts(config, simfile_obj, pack_name, wav_path, num_samples):
@@ -93,7 +93,7 @@ def process_song(config, pack_name, song_name):
     song_path = config.paths.raw / pack_name / song_name
 
     # Locate audio file
-    audio_path, ext = locate_audio(song_path)
+    audio_path = locate_audio(song_path)
     if audio_path is None:
         print(f"WARNING: {song_path} does not have an audio file")
         return
