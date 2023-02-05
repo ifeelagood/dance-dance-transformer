@@ -2,7 +2,9 @@ import os
 import pathlib
 import pickle
 import multiprocessing
-import queue
+import tqdm
+from tqdm.contrib.concurrent import process_map
+import time
 
 import numpy as np
 import pandas as pd
@@ -18,6 +20,10 @@ from simfile.notes.timed import time_notes
 SIMFILE_EXTENSIONS = (".ssc", ".sm")
 AUDIO_EXTENSIONS = (".wav", ".ogg", ".mp3")
 NOTES = (NoteType.TAP, NoteType.HOLD_HEAD, NoteType.TAIL, NoteType.ROLL_HEAD)
+
+def clean_filename(filename):
+    """Remove invalid characters from a filename for windows"""
+    return "".join(c for c in filename if c not in r'\/:*?"<>|')
 
 
 def locate_audio(song_path : pathlib.Path) -> pathlib.Path:
@@ -62,15 +68,13 @@ def extract_features(config, audio):
 def generate_examples(config, features, sm):
 
     n_frames = features.shape[0]
-    n_difficulties = sum(chart.difficulty in config.charts.difficulties for chart in sm.charts)
     n_examples = n_frames - config.onset.past_context - config.onset.future_context - 1
     sequence_length = config.onset.past_context + config.onset.future_context + 1
     
+    title = clean_filename(sm.title)
     
     # create a time vector for the features
     time = np.arange(n_frames) * config.audio.hop_length / config.audio.sample_rate
-
-
 
     for chart in sm.charts:
         if chart.difficulty not in config.charts.difficulties:
@@ -90,6 +94,7 @@ def generate_examples(config, features, sm):
         
         # create an array to store the examples
         examples = np.zeros((n_examples, sequence_length, config.audio.n_bins, len(config.audio.n_ffts)), dtype=np.float32)
+        labels = np.zeros((n_examples, 1), dtype=np.float32)
         
         # generate examples
         for i in range(config.onset.past_context + 1, n_frames - config.onset.future_context, 1):
@@ -103,15 +108,30 @@ def generate_examples(config, features, sm):
                     break
                 
             examples[i - config.onset.past_context - 1] = example
+            labels[i - config.onset.past_context - 1] = note_in_example
         
-        # save examples
-        examples_path = config.paths.examples / sm.title / f"{chart.difficulty}.pkl"
-        examples_path.parent.mkdir(parents=True, exist_ok=True)
         
-        with open(examples_path, "wb") as f:
-            pickle.dump(examples, f)
+        
+        # save examples and labels
+        examples_path = config.paths.examples / title / chart.difficulty / "examples.npy"
+        labels_path = config.paths.examples / title / chart.difficulty / "labels.npy"
+        
+        if not examples_path.parent.exists():
+            examples_path.parent.mkdir(parents=True)
+    
+        if not labels_path.parent.exists():
+            labels_path.parent.mkdir(parents=True)
             
-    return n_examples, n_difficulties
+        np.save(examples_path, examples)
+        np.save(labels_path, labels)
+
+
+            
+    # save number of examples to a text file
+    n_examples_path = config.paths.examples / title / "n_examples.txt"
+
+    with open(n_examples_path, "w") as f:
+        f.write(str(n_examples))
 
 def process_song(config, pack_name, song_name):
     song_path = config.paths.raw / pack_name / song_name
@@ -133,36 +153,21 @@ def process_song(config, pack_name, song_name):
     sm, _ = simfile.opendir(song_path)
 
     # generate examples and save them
-    n_examples, n_difficulties = generate_examples(config, features, sm)
+    generate_examples(config, features, sm)
     
-    # return song name, number of examples, and number of difficulties
-    return song_name, n_examples, n_difficulties
+def star(args):
+    return process_song(*args)
     
-def preprocess(config, num_threads=16):
-    charts = []
-    
-    # create a queue to store the results
-    queue = multiprocessing.Queue()
-    
-    # create a pool of workers
-    pool = multiprocessing.Pool(num_threads)
-    
-    # process songs
+def preprocess(config, num_threads=16):    
+    total = sum(len(os.listdir(config.paths.raw / pack_name)) for pack_name in config.dataset.packs)
+
+    arglist = []
     for pack_name in config.dataset.packs:
-        for song_name in os.listdir(config.paths.raw / pack_name):
-            pool.apply_async(process_song, args=(config, pack_name, song_name), callback=queue.put)
-            
-    pool.close()
-    pool.join()
-    
-    # collect results
-    while not queue.empty():
-        charts.append(queue.get())
+        pack_path = config.paths.raw / pack_name
         
-    # charts to dataframe
-    charts = pd.DataFrame(charts, columns=["song", "examples", "difficulties"])
-    
-    # save charts
-    charts.to_csv(config.paths.charts, index=False)
+        for song_name in os.listdir(pack_path):
+            arglist.append((config, pack_name, song_name))
 
 
+
+    r = process_map(star, arglist, max_workers=num_threads)
