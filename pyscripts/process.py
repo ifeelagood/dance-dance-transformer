@@ -1,16 +1,18 @@
 import os
-import json
 import pathlib
-import threading
+import pickle
+import multiprocessing
 import queue
-import tqdm
 
+import numpy as np
+import pandas as pd
+
+import librosa
 
 import simfile 
 from simfile.notes import NoteData, NoteType
 from simfile.timing import TimingData
 from simfile.notes.timed import time_notes
-from pydub import AudioSegment
 
 
 SIMFILE_EXTENSIONS = (".ssc", ".sm")
@@ -19,139 +21,148 @@ NOTES = (NoteType.TAP, NoteType.HOLD_HEAD, NoteType.TAIL, NoteType.ROLL_HEAD)
 
 
 def locate_audio(song_path : pathlib.Path) -> pathlib.Path:
-    """Locate audio file at the given path"""
+    """Locate audio file at a given path"""
 
     for file in os.listdir(song_path):
         for ext in AUDIO_EXTENSIONS:
             if file.endswith(ext):
                 return song_path / file
+                
+    return None
 
 
-def process_charts(config, simfile_obj, pack_name, wav_path, num_samples):
-    """Process the given simfile object into a list of charts"""
-
-    charts = []
-    # iterate through charts
-    for chart in simfile_obj.charts:
-        # check if chart type is valid
-        if chart.stepstype not in config.charts.types:
-            continue
+def extract_features(config, audio):
+    """Extract mel spectrogram features from audio"""
     
-        # check if difficulty is valid
+    features = []
+
+    for n_fft in config.audio.n_ffts:
+        mel = librosa.feature.melspectrogram(
+            y=audio, 
+            sr=config.audio.sample_rate, 
+            n_fft=n_fft, 
+            hop_length=config.audio.hop_length, 
+            n_mels=config.audio.n_bins, 
+            fmin=config.audio.fmin, 
+            fmax=config.audio.fmax
+        )
+        
+        if config.audio.log:
+            mel = np.log(mel + config.audio.log_eps)
+
+        features.append(mel)
+    
+    # stack features to be (C, F, T) (channels, features, time)
+    features = np.stack(features, axis=0)
+    # transpose to be (T, F, C)
+    features = np.transpose(features, (2, 1, 0))
+    
+    return features
+
+def generate_examples(config, features, sm):
+
+    n_frames = features.shape[0]
+    n_difficulties = sum(chart.difficulty in config.charts.difficulties for chart in sm.charts)
+    n_examples = n_frames - config.onset.past_context - config.onset.future_context - 1
+    sequence_length = config.onset.past_context + config.onset.future_context + 1
+    
+    
+    # create a time vector for the features
+    time = np.arange(n_frames) * config.audio.hop_length / config.audio.sample_rate
+
+
+
+    for chart in sm.charts:
         if chart.difficulty not in config.charts.difficulties:
             continue
         
-        # get note data and timing data
-        note_data = NoteData(chart.notes)
-        timing_data = TimingData(simfile_obj, chart)
-
-        actions = [] # an integer representing (tap, hold, tail, roll)
-        columns = [] # an integer representing the arrow direction
-        beats = []   # the beat of the note
-        timings = [] # the time in second of the note
-
-        for timed_note in time_notes(note_data, timing_data):
-            note = timed_note.note
+        if chart.stepstype not in config.charts.types:
+            continue
+        
+        # time notes
+        note_data = NoteData(chart)
+        timing_data = TimingData(sm, chart)
+                
+        note_times = [
+            timed_note.time for timed_note in time_notes(note_data, timing_data)
+            if timed_note.note.note_type in NOTES
+        ]
+        
+        # create an array to store the examples
+        examples = np.zeros((n_examples, sequence_length, config.audio.n_bins, len(config.audio.n_ffts)), dtype=np.float32)
+        
+        # generate examples
+        for i in range(config.onset.past_context + 1, n_frames - config.onset.future_context, 1):
+            example = features[i - config.onset.past_context : i + config.onset.future_context + 1]
             
-            # skip invalid actions
-            if note.note_type not in NOTES:
-                continue                
-
-            timings.append(timed_note.time)
-            columns.append(note.column)
-            actions.append(note.note_type.value)
-            beats.append(float(note.beat))
+            # check if target frame is an onset
+            note_in_example = False
+            for note_time in note_times:
+                if time[i] <= note_time <= time[i+1]:
+                    note_in_example = True
+                    break
+                
+            examples[i - config.onset.past_context - 1] = example
+        
+        # save examples
+        examples_path = config.paths.examples / sm.title / f"{chart.difficulty}.pkl"
+        examples_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(examples_path, "wb") as f:
+            pickle.dump(examples, f)
             
-        # get bpm timings
-        bpms = [(int(x.beat), float(x.value)) for x in timing_data.bpms]
-        
-        # create a new chart dict
-
-        new_chart = {
-            "title": simfile_obj.title,
-            "difficulty": chart.difficulty.lower(),
-            "samplestart": float(simfile_obj.samplestart),
-            "samplelength": float(simfile_obj.samplelength),
-            "offset": float(simfile_obj.offset),
-            "bpms": bpms,
-            "pack": pack_name,
-            "actions": actions,
-            "columns": columns,
-            "beats": beats,
-            "timings": timings,
-            "wav": wav_path.name,
-            "samples": num_samples
-        }
-        
-        # append to charts
-        charts.append(new_chart)
-        
-    return charts
-
+    return n_examples, n_difficulties
 
 def process_song(config, pack_name, song_name):
     song_path = config.paths.raw / pack_name / song_name
 
-    # Locate audio file
+    # locate audio file
     audio_path = locate_audio(song_path)
     if audio_path is None:
         print(f"WARNING: {song_path} does not have an audio file")
         return
 
     # load audio file
-    wav = AudioSegment.from_file(audio_path)
+    audio, sr = librosa.load(audio_path, sr=config.audio.sample_rate)
+    assert sr == config.audio.sample_rate, "Sample rate mismatch"
 
-    # resample and convert to mono
-    wav.set_frame_rate(config.audio.sample_rate)
-    wav.set_channels(1)
+    # extract features
+    features = extract_features(config, audio) # (T, F, C)
+
+    # load simfile
+    sm, _ = simfile.opendir(song_path)
+
+    # generate examples and save them
+    n_examples, n_difficulties = generate_examples(config, features, sm)
     
-    # get number of samples
-    num_samples = len(wav.get_array_of_samples())
-
-    # export wav to export directory
-    wav_path = config.paths.wav / audio_path.with_suffix(".wav").name
-    wav.export(wav_path, format="wav")
-
-    # open the simfile
-    simfile_obj, simfile_name = simfile.opendir(song_path)
-
-    # process charts
-    processed_charts = process_charts(config, simfile_obj, pack_name, wav_path, num_samples)
-    return processed_charts
-
-
-def process_packs(config, num_threads=16):
-    """Process all packs in config.dataset.packs"""
-
-    # add (pack_dir, song) to queue
-    q = queue.Queue()
-    for pack_name in config.dataset.packs:
-        pack_path = config.paths.raw / pack_name
-        for song_name in os.listdir(pack_path):
-            q.put((pack_name, song_name))
+    # return song name, number of examples, and number of difficulties
+    return song_name, n_examples, n_difficulties
     
-    # store charts
+def preprocess(config, num_threads=16):
     charts = []
-
-    def worker(q):
-        nonlocal charts
-        while not q.empty():
-            pack_name, song_name = q.get()
-            charts.extend(process_song(config, pack_name, song_name))
-            q.task_done()
-
-    # start threads
-    threads = []
-    for _ in range(num_threads):
-        t = threading.Thread(target=worker, args=(q,))
-        t.start()
-        threads.append(t)
     
-    # wait for threads to finish
-    for t in threads:
-        t.join()
+    # create a queue to store the results
+    queue = multiprocessing.Queue()
+    
+    # create a pool of workers
+    pool = multiprocessing.Pool(num_threads)
+    
+    # process songs
+    for pack_name in config.dataset.packs:
+        for song_name in os.listdir(config.paths.raw / pack_name):
+            pool.apply_async(process_song, args=(config, pack_name, song_name), callback=queue.put)
+            
+    pool.close()
+    pool.join()
+    
+    # collect results
+    while not queue.empty():
+        charts.append(queue.get())
+        
+    # charts to dataframe
+    charts = pd.DataFrame(charts, columns=["song", "examples", "difficulties"])
+    
+    # save charts
+    charts.to_csv(config.paths.charts, index=False)
 
-    # write charts to json file
-    with open(config.paths.charts, "w") as f:
-        json.dump(charts, f, indent=4)
 

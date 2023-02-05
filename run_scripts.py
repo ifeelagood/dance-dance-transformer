@@ -42,11 +42,11 @@ def unpack_script(args):
         t.join()
 
 def process_script(args):
-    # create wav directory
-    if not config.paths.wav.exists():
-        config.paths.wav.mkdir(parents=True)
+    # create examples directory
+    if not config.paths.examples.exists():
+        config.paths.examples.mkdir(parents=True)
     
-    process_packs(config)
+    preprocess(config, num_threads=args.num_threads)
 
 def all(args):
     print("Downloading...")
@@ -78,6 +78,7 @@ def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", type=str, choices=["all", "download", "unpack", "process"], help="Action to perform.")
+    parser.add_argument("--num-threads", type=int, default=16, help="Number of threads to use when preprocessing.")
     
     args = parser.parse_args()
     

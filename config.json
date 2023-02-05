@@ -1,9 +1,11 @@
 {
+    
     "paths": {
         "data": "data",
         "raw": "data/raw",
         "wav": "data/wav",
-        "charts": "data/charts.json"
+        "examples": "data/examples",
+        "charts": "data/charts.csv"
     },
 
     "dataset": {
@@ -26,22 +28,22 @@
 
     "audio": { 
         "sample_rate": 44100,
-        "stft": {
-            "n_fft": 2048,
-            "window_length": 0.045,
-            "hop_length": 0.010
-        },
-
-        "mel": {
-            "n_bins": 80,
-            "fmin": 20,
-            "fmax": 20000
-        }
+        "n_ffts": [1024, 2048, 4096],
+        "hop_length": 512,
+        "n_bins": 80,
+        "fmin": 27.5,
+        "fmax": 16000.0,
+        "log": true,
+        "log_eps": 1e-6
     },
         
     "charts": {
         "types": ["dance-single"],
         "difficulties": ["Beginner", "Easy", "Medium", "Hard", "Challenge"]
-    }
+    },
 
+    "onset": {
+        "past_context": 7,
+        "future_context": 7
+    } 
 }
