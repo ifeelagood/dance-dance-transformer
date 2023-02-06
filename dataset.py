@@ -63,9 +63,8 @@ def feature_generator(manifest):
                 # get single label
                 label = current_onset_mask[frame_idx + config.onset.sequence_length - 1] # last frame in sequence.
 
-                # label to np float32
-                label = torch.from_numpy(np.array(label, dtype=np.float32))
-
+                # label from bool to float
+                label = label.astype(np.float32)
 
                 # yield example
                 yield features, label
