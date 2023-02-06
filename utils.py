@@ -1,7 +1,10 @@
 import os
 import torch
 import torchaudio
+import tqdm
 import numpy as np
+import json
+import pathlib
 
 import simfile
 from simfile.notes import NoteData, NoteType
@@ -14,8 +17,12 @@ NOTES = (NoteType.TAP, NoteType.HOLD_HEAD, NoteType.TAIL, NoteType.ROLL_HEAD)
 AUDIO_EXTENSIONS = (".mp3", ".ogg", ".wav")
 
 def samples2frames(n_samples : int) -> int:
-    """Convert the number of samples to number frames, accounting for context"""
-    return int(np.ceil(n_samples / config.audio.hop_length)) - (config.onset.past_context + config.onset.future_context)
+    """Convert the number of samples to frame index"""
+    return int(np.ceil(n_samples / config.audio.hop_length)) - config.onset.sequence_length + 1
+
+def time2frame(time : float) -> int:
+    """Convert time in seconds to feature frame index"""
+    return int(np.floor(time * config.audio.sample_rate / config.audio.hop_length))
 
 def frame2time(frame_idx : int) -> float:
     """Convert feature frame index to time in seconds"""
@@ -30,55 +37,22 @@ def locate_audio(song_path : os.PathLike) -> os.PathLike:
     for file in os.listdir(song_path):
         for ext in AUDIO_EXTENSIONS:
             if file.endswith(ext):
-                return os.path.join(song_path, file)
+                return pathlib.Path(song_path, file)
     return None
 
-def load_audio(audio_path : os.PathLike) -> torch.Tensor:
-    """Loads audio file from given path, resamples and converts to mono if needed."""
-    
-    audio, sr = torchaudio.load(audio_path)
 
-    # resample if needed
-    if sr != config.audio.sample_rate:
-        audio = torchaudio.transforms.Resample(sr, config.audio.sample_rate)(audio)
 
-    # convert to mono
-    if len(audio.shape) > 1:
-        if audio.shape[0] > 1:
-            audio = torch.mean(audio, dim=0, keepdim=False)
-        else:
-            audio = audio.squeeze(0)
 
-    return audio
+def get_difficulties(song_path, allowed_difficulties, allowed_types):
+    sm, _ = simfile.opendir(song_path)
 
-def extract_features(audio : torch.Tensor) -> torch.Tensor:
-    """Calculate mel spectrogram features from audio"""
+    return list(map(lambda chart : getattr(chart, "difficulty"), filter(lambda chart : chart.stepstype in allowed_types and chart.difficulty in allowed_difficulties, sm.charts)))
 
-    features = []
-    for n_fft in config.audio.n_ffts:
-        mel = torchaudio.transforms.MelSpectrogram(
-            sample_rate=config.audio.sample_rate,
-            n_fft=n_fft,
-            hop_length=config.audio.hop_length,
-            n_mels=config.audio.n_bins,
-            f_min=config.audio.fmin,
-            f_max=config.audio.fmax
-        )(audio)
-        
-        if config.audio.log:
-            mel = torch.log(mel + config.audio.log_eps)
+ 
 
-        features.append(mel)
-
-    # stack features to be (C, F, T) (channels, features, time)
-    features = torch.stack(features, dim=0)
-    # transpose to be (T, F, C)
-    features = features.permute(2, 1, 0)
-
-    return features
 
 def get_onset_mask(song_path : os.PathLike, difficulty : str, n_frames : int) -> np.ndarray:
-    """Get the times of all notes in a song"""
+    """Generate a mask for onsets"""
     sm, _ = simfile.opendir(song_path)
 
     # get chart from simfile.charts
@@ -88,23 +62,83 @@ def get_onset_mask(song_path : os.PathLike, difficulty : str, n_frames : int) ->
     timing_data = TimingData(sm, chart)
 
     # get note times
-    times = [
+    note_times = np.array([
         timed_note.time for timed_note in time_notes(note_data, timing_data)
         if timed_note.note.note_type in NOTES
-    ]
-
-    times = np.array(times)
-
-    mask = np.zeros(n_frames, dtype=np.bool)
-    for time in times:
-        frame = frame2time(time)
-        mask[int(frame)] = True
+    ])
     
-    return mask
+    # calculate onset mask
+    onset_mask = np.zeros(n_frames, dtype=np.bool)
+    for note_time in note_times:
+        frame_idx = time2frame(note_time)
+        
+        if frame_idx < 0:
+            raise ValueError("Note time is before audio start")
+        elif frame_idx >= n_frames:
+            break
+        
+        onset_mask[frame_idx] = True
+    
+    return onset_mask
 
-def get_features(audio_path : os.PathLike) -> torch.Tensor:
-    """Get features for a song"""
-    audio = load_audio(audio_path)
-    features = extract_features(audio)
 
-    return features
+
+class StatsRecorder:
+    def __init__(self, red_dims : tuple):
+        """
+        Accumulates normalization statistics across mini-batches.
+        ref: http://notmatthancock.github.io/2017/03/23/simple-batch-stat-updates.html
+        """
+        self.red_dims = red_dims # which mini-batch dimensions to average over
+        self.nobservations = 0   # running number of observations
+
+    def update(self, data : torch.Tensor):
+        """
+        data: ndarray, shape (nobservations, ndimensions)
+        """
+        # initialize stats and dimensions on first batch
+        if self.nobservations == 0:
+            self.mean = data.mean(dim=self.red_dims, keepdim=True)
+            self.std  = data.std (dim=self.red_dims,keepdim=True)
+            self.nobservations = data.shape[0]
+            self.ndimensions   = data.shape[1]
+        else:
+            if data.shape[1] != self.ndimensions:
+                raise ValueError("Data dims do not match previous observations.")
+            
+            # find mean of new mini batch
+            new_mean = data.mean(dim=self.red_dims, keepdim=True)
+            new_std = data.std(dim=self.red_dims, keepdim=True)
+            
+            # update number of observations
+            m = self.nobservations * 1.0
+            n = data.shape[0]
+
+            # update running statistics
+            tmp = self.mean
+            self.mean = m/(m+n)*tmp + n/(m+n)*new_mean # update running mean
+            self.std  = m/(m+n)*self.std**2 + n/(m+n)*new_std**2 +m*n/(m+n)**2 * (tmp - new_mean)**2 # update running variance
+            self.std  = torch.sqrt(self.std)
+                                 
+            # update total number of seen samples
+            self.nobservations += n
+
+def analyse_dataset(dataloader : torch.utils.data.DataLoader) -> None:
+    """Get the mean and standard deviation of features in the dataloader"""    
+    # input: (B, T, F, C) (batch, time, bins, channels)
+    
+    stats = StatsRecorder((0, 1, 2, 3)) # global stats
+
+    for features, _ in tqdm.tqdm(dataloader, desc='Analysing dataset'):
+        stats.update(features)
+        
+    # save to config.paths.stats as packed npz
+
+    np.savez_compressed(
+        config.paths.stats,
+        mean=stats.mean.numpy(),
+        std=stats.std.numpy(),
+    )
+    
+    print(f"Saved stats to {config.paths.stats}")
+

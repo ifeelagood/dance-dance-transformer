@@ -15,7 +15,7 @@ class OnsetCNN(torch.nn.Module):
         x = self.pool(self.relu(self.conv1(x))) # layer 1
         x = self.pool(self.relu(self.conv2(x))) # layer 2
 
-        return x # 7, 8 * 20
+        return x
 
 class OnsetLSTM(torch.nn.Module):
     def __init__(self, n_features=160, num_layers=2, hidden_size=128):
@@ -25,16 +25,17 @@ class OnsetLSTM(torch.nn.Module):
         self.hidden_size = hidden_size
 
         self.lstm = torch.nn.LSTM(input_size=n_features, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_size, 1)
 
-    def init_hidden(self, batch_size):
+    def init_hidden(self, batch_size, device):
         # (num_layers, batch_size, hidden_size)
-        return (torch.zeros(self.num_layers, batch_size, self.hidden_size),
-                torch.zeros(self.num_layers, batch_size, self.hidden_size))
+        return (torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device),
+                torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device))
 
     def forward(self, x, hidden):
         out, _ = self.lstm(x, hidden)
-        out = self.fc(out)
+
+        # get last output
+        out = out[:, -1, :].unsqueeze(1)
 
         return out
 
@@ -42,12 +43,11 @@ class OnsetModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
     
-
         self.cnn = OnsetCNN()
         self.lstm = OnsetLSTM()
 
         self.fc = torch.nn.Sequential(
-            torch.nn.Linear(7, 1),
+            torch.nn.Linear(128, 1),
         )
 
         self.activation = torch.nn.Sigmoid()
@@ -55,41 +55,33 @@ class OnsetModel(torch.nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
 
-        # permute to channels first
-        x = x.permute(0, 2, 3, 1) # (B, T, F, C)
-    
+        # permute to (B, C, T, F)
+        x = x.permute(0, 3, 1, 2)
 
         # CNN
         out = self.cnn(x)
-        print("cnn out shape: ", out.shape)
 
         # permute to (B, T, F, C), flatten channels and features
         out = out.permute(0, 2, 3, 1)
         out = out.view(batch_size, -1, 160)
 
         # LSTM
-        hidden = self.lstm.init_hidden(batch_size)
+        hidden = self.lstm.init_hidden(batch_size, x.device)
         out = self.lstm(out, hidden)
-        print("lstm out shape: ", out.shape)
 
-        # squeeze out the last dimension
-        out = out.squeeze(-1)
+        # squeeze time dimension
+        out = out.squeeze(1)
 
-        # FC
-        out = self.fc(out)
-        print("fc out shape: ", out.shape)
+        # FC + sigmoid
+        out = self.activation(self.fc(out))
 
-        # sigmoid activation
-        out = self.activation(out)
+        # squeeze channel dimension
+        out = out.squeeze(1)
 
         return out
 
 if __name__ == "__main__":
+    # sanity check
     x = torch.randn(32, 15, 80, 3)
-
-    # permute to channels second
-    x = x.permute(0, 3, 1, 2) # (B, C, T, F)
-
     y_hat = OnsetModel()(x)
-
     print(y_hat.shape)

@@ -8,7 +8,8 @@
     "paths": {
         "data": "data",
         "raw": "data/raw",
-        "manifest": "data/manifest.json"
+        "manifest": "data/manifest.json",
+        "stats": "data/stats.npz"
     },
 
     "dataset": {
@@ -35,7 +36,9 @@
         "fmin": 27.5,
         "fmax": 16000.0,
         "log": true,
-        "log_eps": 1e-6
+        "log_eps": 1e-6,
+        "mean": 3.7581453,
+        "std": 3.222148
     },
         
     "charts": {
@@ -44,15 +47,18 @@
     },
 
     "onset": {
-        "past_context": 7,
-        "future_context": 7,
+        "sequence_length": 15,
         "threshold": 0.01
     },
 
     "training": {
-        "batch_size": 32,
-        "learning_rate": 1e-3,
-        "epochs": 100,
-        "num_workers": 4
+        "hyperparameters": {
+            "batch_size": 32,
+            "epochs": 100,
+            "learning_rate": 0.0001,
+            "dropout": 0.5,
+            "l2": 0.0001,
+            "optimizer": "adam"
+        }
     }
 }

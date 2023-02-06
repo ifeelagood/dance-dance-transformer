@@ -7,6 +7,9 @@ import json
 from config import config
 from utils import *
 
+
+from transform import OnsetTransform
+
 def train_valid_split(train_size=0.8):
     """Split manifest into train and validation sets"""
 
@@ -32,15 +35,46 @@ def train_valid_split(train_size=0.8):
 
     return train_manifest, valid_manifest
 
+def feature_generator(manifest):
+    """"""
+    current_song = None
+    current_difficulty = None
+    current_features = None
+    current_onset_mask = None
+    transform = OnsetTransform()
+    
+    
+    for song_name, song in manifest.items():
+        if song_name != current_song:
+            current_song = song_name
+            current_features, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"])
+            current_features = transform(current_features, sr)
+            current_difficulty = None # reset difficulty
 
-class ExampleIterator:
+        for difficulty in song["difficulties"]:
+            if difficulty != current_difficulty: 
+                current_difficulty = difficulty
+                current_onset_mask = get_onset_mask(config.paths.raw / song["pack_name"] / song_name, difficulty, song["n_samples"]) # use n_samples rather than current_features.shape[0].
+                
+            for frame_idx in range(0, current_features.shape[0] - config.onset.sequence_length):
+                # get features
+                features = current_features[frame_idx : frame_idx + config.onset.sequence_length]
+
+                # get single label
+                label = current_onset_mask[frame_idx + config.onset.sequence_length - 1] # last frame in sequence.
+
+                # label to np float32
+                label = torch.from_numpy(np.array(label, dtype=np.float32))
+
+
+                # yield example
+                yield features, label
+
+    
+class OnsetDataset(torch.utils.data.IterableDataset):
     def __init__(self, manifest):
+        super().__init__()
         self.manifest = manifest
-
-        self.song = None
-        self.difficulty = None
-        self.features = None
-        self.onset_mask = None
 
     def __len__(self):
         return np.sum([
@@ -49,111 +83,60 @@ class ExampleIterator:
         ])
 
     def __iter__(self):
-        for song_name, song in self.manifest.items():
-            if song_name != self.song: 
-                self.song = song_name
-                self.features = get_features(config.paths.raw / song["pack_name"] / song_name / song["audio_name"])
+        return feature_generator(self.manifest)
 
-            for difficulty in song["difficulties"]:
-                if difficulty != self.difficulty:
-                    self.difficulty = difficulty
-                    self.onset_mask = get_onset_mask(config.paths.raw / song["pack_name"] / song_name, difficulty, self.features.shape[0])
 
-                for frame_idx in range(config.onset.past_context, self.features.shape[0] - config.onset.future_context):
-                    # get features
-                    features = self.features[frame_idx - config.onset.past_context : frame_idx + config.onset.future_context + 1]
+def get_chunk(manifest, worker_id, num_workers):
 
-                    # get labels
-                    labels = self.onset_mask[frame_idx - config.onset.past_context : frame_idx + config.onset.future_context + 1]
+    # cut manifest into a chunk
+    n_songs = len(manifest)
+    chunk_size = n_songs // num_workers # integer division
+    overflow = n_songs % num_workers    # remainder
+    
+    # get start and end indices
+    start_idx = worker_id * chunk_size 
+    end_idx = start_idx + chunk_size
+    
+    # add overflow to last chunk
+    if worker_id == num_workers - 1:
+        end_idx += overflow
 
-                    # yield example
-                    yield features, labels
+    # get the chunk
+    chunk = {k: manifest[k] for k in list(manifest.keys())[start_idx:end_idx]}
+    
+    return chunk
 
-    def __next__(self):
-        return next(self.__iter__())
 
+# to be used above with num_workers > 0
+def worker_init_fn(worker_id):
+    worker_info = torch.utils.data.get_worker_info()
+
+    if worker_info is None: # single process
+        return
+    
+    if worker_info.num_workers > 1:
+        chunk = get_chunk(worker_info.dataset.manifest, worker_info.id, worker_info.num_workers)
+        worker_info.dataset.manifest = chunk
     
 
-def chunk_manifest(manifest, chunk_size):
-    """Split manifest into chunks of size chunk_size"""
-
-    chunks = []
-    chunk = {}
-
-    for song_name, song in manifest.items():
-        chunk[song_name] = song
-
-        if len(chunk) >= chunk_size:
-            chunks.append(chunk)
-            chunk = {}
-
-    # add the last chunk
-    if len(chunk) > 0:
-        chunks.append(chunk)
-
-    return chunks
-
-
-class OnsetDataset(torch.utils.data.IterableDataset):
-    def __init__(self, manifest):
-        self.manifest = manifest
-
-    def __len__(self):
-        return len(ExampleIterator(self.manifest))
-    
-
-    def __iter__(self):
-        worker_info = torch.utils.data.get_worker_info()
-
-        # get the number of workers
-        if worker_info is None:
-            num_workers = 0
-        else:
-            num_workers = worker_info.num_workers
-
-        if num_workers > 1:
-            # split manifest into chunks
-            chunks = chunk_manifest(self.manifest, len(self) // num_workers)
-
-            # get the chunk for this worker
-            chunk = chunks[torch.utils.data.get_worker_info().id]
-
-            # return an iterator for the chunk
-            return ExampleIterator(chunk)
-
-        else:
-            # return an iterator for the whole manifest
-            return ExampleIterator(self.manifest)
-
-
-
-        
 
 if __name__ == "__main__":
-    import time
     import tqdm
     train_manifest, valid_manifest = train_valid_split()
 
     train_dataset = OnsetDataset(train_manifest)
     valid_dataset = OnsetDataset(valid_manifest)
 
-    def time_function(f):
-        start = time.time()
-        f()
-        end = time.time()
-        return end - start
-
-    def single_process():
-        # iterate with a single worker
-        for features, labels in tqdm.tqdm(train_dataset, total=len(train_dataset)):
-            pass
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=512,
+        num_workers=0
+    )
     
-    def multi_process():
-        dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=4)
-        for features, labels in tqdm.tqdm(dataloader, total=len(train_dataset)):
-            pass
-
+    valid_loader = torch.utils.data.DataLoader(
+        valid_dataset,
+        batch_size=512,
+        num_workers=0
+    )
     
-
-    print("Single process: {:.2f} seconds".format(time_function(single_process)))
-    print("Multi process: {:.2f} seconds".format(time_function(multi_process)))
+    print(config.stats)

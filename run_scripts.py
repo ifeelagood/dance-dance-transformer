@@ -7,6 +7,7 @@ import pathlib
 import argparse
 import threading 
 
+from manifest import create_manifest
 from pyscripts import *
 from config import config
 
