@@ -1,5 +1,10 @@
 {
     
+    "common": {
+        "name": "dance-dance-transformer",
+        "seed": 42
+    },
+
     "paths": {
         "data": "data",
         "raw": "data/raw",
@@ -7,9 +12,7 @@
     },
 
     "dataset": {
-
         "packs": ["fraxtil", "itg"],
-
         "urls": {
             "fraxtil": [
                 "https://fra.xtil.net/simfiles/data/tsunamix/III/Tsunamix III [SM5].zip", 
@@ -44,5 +47,12 @@
         "past_context": 7,
         "future_context": 7,
         "threshold": 0.01
-    } 
+    },
+
+    "training": {
+        "batch_size": 32,
+        "learning_rate": 1e-3,
+        "epochs": 100,
+        "num_workers": 4
+    }
 }
