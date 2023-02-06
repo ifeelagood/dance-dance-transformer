@@ -120,7 +120,7 @@ def train(train_loader, valid_loader):
 
     if config.train.checkpoint:
         checkpoint_callback = ModelCheckpoint(
-            monitor="valid/epoch_loss",
+            monitor="valid/step_loss",
             dirpath=config.paths.checkpoints,
             filename="onset-{epoch:02d}-{val_loss:.2f}",
             save_top_k=config.train.top_k,
@@ -131,7 +131,7 @@ def train(train_loader, valid_loader):
 
     if config.train.early_stopping:
         early_stopping = EarlyStopping(
-            monitor="valid/epoch_loss",
+            monitor="valid/step_loss",
             patience=config.train.patience,
             mode="min",
         )
