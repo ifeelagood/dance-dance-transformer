@@ -3,9 +3,7 @@
     "paths": {
         "data": "data",
         "raw": "data/raw",
-        "wav": "data/wav",
-        "examples": "data/examples",
-        "charts": "data/charts.csv"
+        "manifest": "data/manifest.json"
     },
 
     "dataset": {
@@ -44,6 +42,7 @@
 
     "onset": {
         "past_context": 7,
-        "future_context": 7
+        "future_context": 7,
+        "threshold": 0.01
     } 
 }

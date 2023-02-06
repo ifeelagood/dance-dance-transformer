@@ -11,6 +11,9 @@ from pyscripts import *
 from config import config
 
 def download_script(args):
+    if not config.paths.raw.exists():
+        config.paths.raw.mkdir(parents=True)
+
     download_threads = []
     for pack, urls in config.dataset.urls.items():
         pack_dir = config.paths.raw / pack
@@ -41,34 +44,27 @@ def unpack_script(args):
     for t in extract_threads:
         t.join()
 
-def process_script(args):
-    # create examples directory
-    if not config.paths.examples.exists():
-        config.paths.examples.mkdir(parents=True)
-    
-    preprocess(config, num_threads=args.num_threads)
+def manifest_script(args):
+    create_manifest(config)
+
+
 
 def all(args):
     print("Downloading...")
-    if not config.paths.raw.exists():
-        config.paths.raw.mkdir(parents=True)
     download_script(args)
 
     print("Unpacking...")
     unpack_script(args)
 
-    print("Processing...")
-    if not config.paths.wav.exists():
-        config.paths.wav.mkdir(parents=True)
-
-    process_script(args)
+    print("Creating manifest...")
+    manifest_script(args)
     
 def run(args):
     actions = {
         "all": all,
         "download": download_script,
         "unpack": unpack_script,
-        "process": process_script
+        "manifest": manifest_script
     }
 
     func = actions[args.action]
@@ -77,8 +73,7 @@ def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", type=str, choices=["all", "download", "unpack", "process"], help="Action to perform.")
-    parser.add_argument("--num-threads", type=int, default=16, help="Number of threads to use when preprocessing.")
+    parser.add_argument("action", type=str, choices=["all", "download", "unpack", "manifest"], help="Action to perform.")
     
     args = parser.parse_args()
     
