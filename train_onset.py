@@ -46,7 +46,7 @@ class OnsetLightningModule(pl.LightningModule):
         self.pool = torch.nn.MaxPool2d(kernel_size=(1, 3))
 
         self.lstm = torch.nn.LSTM(
-            input_size=160,
+            input_size=165,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -69,7 +69,7 @@ class OnsetLightningModule(pl.LightningModule):
             torch.zeros(self.num_layers * 2, batch_size, self.hidden_size, device=device)
         )
 
-    def forward(self, x):
+    def forward(self, x, difficulty=None):
         # permute to (B, C, T, F)
         x = x.permute(0, 3, 1, 2) 
     
@@ -80,14 +80,23 @@ class OnsetLightningModule(pl.LightningModule):
         # permute to (B, T, F, C) for LSTM
         x = x.permute(0, 2, 3, 1)
 
-    
         # flatten to 
         x = x.reshape(x.size(0), x.size(1), -1)
+
+        # add onehot difficulty as a feature to each frame
+        if difficulty is not None:
+            difficulty = difficulty.unsqueeze(1).repeat(1, x.size(1), 1)
+            x = torch.cat([x, difficulty], dim=2)
+        else:
+            x = torch.cat([x, torch.zeros(x.size(0), x.size(1), 5, device=x.device)], dim=2)
+
 
         # lstm
         hidden = self.init_hidden(x.size(0), x.device)
 
         x, hidden = self.lstm(x, hidden)
+    
+
 
         # get last frame for FC layers
         x = x[:, -1, :]
@@ -102,8 +111,8 @@ class OnsetLightningModule(pl.LightningModule):
         return x.squeeze()
 
     def training_step(self, batch, batch_idx):
-        x, y = batch
-        y_hat = self(x)
+        features, difficulty, y = batch
+        y_hat = self.forward(features, difficulty)
         loss = F.binary_cross_entropy(y_hat, y)
         
         self.log("train/step_loss", loss)
@@ -123,8 +132,8 @@ class OnsetLightningModule(pl.LightningModule):
         self.log("train/epoch_auroc", auroc)
 
     def validation_step(self, batch, batch_idx):
-        x, y = batch
-        y_hat = self(x)
+        features, difficulty, y = batch
+        y_hat = self.forward(features, difficulty)
         loss = F.binary_cross_entropy(y_hat, y)
         
         self.log("valid/step_loss", loss)

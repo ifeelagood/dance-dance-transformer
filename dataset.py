@@ -66,8 +66,12 @@ def feature_generator(manifest):
                 # label from bool to float
                 label = label.astype(np.float32)
 
+                # one hot difficulty
+                difficulty_one_hot = np.zeros(len(config.charts.difficulties), dtype=np.float32)
+                difficulty_one_hot[config.charts.difficulties.index(difficulty)] = 1
+
                 # yield example
-                yield features, label
+                yield features, difficulty_one_hot, label
 
     
 class OnsetDataset(torch.utils.data.IterableDataset):
@@ -86,7 +90,6 @@ class OnsetDataset(torch.utils.data.IterableDataset):
 
 
 def get_chunk(manifest, worker_id, num_workers):
-
     # cut manifest into a chunk
     n_songs = len(manifest)
     chunk_size = n_songs // num_workers # integer division
