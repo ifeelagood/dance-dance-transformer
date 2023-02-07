@@ -33,7 +33,7 @@
     "audio": { 
         "sample_rate": 44100,
         "n_ffts": [1024, 2048, 4096],
-        "hop_length": 512,
+        "hop_length": 441,
         "n_bins": 80,
         "fmin": 27.5,
         "fmax": 16000.0,
@@ -56,7 +56,7 @@
     "hyperparameters": {
         "batch_size": 256,
         "epochs": 100,
-        "learning_rate": 1e-3,
+        "learning_rate": 1e-4,
         "dropout": 0.5,
         "l2": 1e-3,
         "optimizer": "Adam"
@@ -72,7 +72,7 @@
         "find_lr": true,
         "checkpoint": true,
         "top_k": 3,
-        "early_stopping": true,
+        "early_stopping": false,
         "patience": 10
     }
 }
