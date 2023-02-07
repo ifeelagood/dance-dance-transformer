@@ -11,7 +11,8 @@
         "manifest": "data/manifest.json",
         "stats": "data/stats.npz",
         "logs": "lightning_logs",
-        "checkpoints": "checkpoints"
+        "checkpoints": "checkpoints",
+        "cache": "cache"
     },
 
     "dataset": {
@@ -56,7 +57,7 @@
     "hyperparameters": {
         "batch_size": 256,
         "epochs": 100,
-        "learning_rate": 1e-4,
+        "learning_rate": 1e-3,
         "dropout": 0.5,
         "l2": 1e-3,
         "optimizer": "Adam"
@@ -65,11 +66,11 @@
     "train": {
         "accelerator": "gpu",
         "devices": 1,
-        "strategy": "DP",
-        "num_workers": 0,
-        "pin_memory": false,
-        "find_batch_size": true,
-        "find_lr": true,
+        "precision": 32,
+        "num_workers": 2,
+        "pin_memory": true,
+        "find_batch_size": false,
+        "find_lr": false,
         "checkpoint": true,
         "top_k": 3,
         "early_stopping": false,

@@ -35,7 +35,7 @@ def train_valid_split(train_size=0.8):
 
     return train_manifest, valid_manifest
 
-def feature_generator(manifest):
+def feature_generator(manifest, precache_audio=True):
     """"""
     current_song = None
     current_difficulty = None
@@ -43,12 +43,29 @@ def feature_generator(manifest):
     current_onset_mask = None
     transform = OnsetTransform()
     
-    
+        
+    if precache_audio:
+        # load all audio into memory
+        for song_name, song in tqdm.tqdm(manifest.items()):
+            song_cache_path = config.paths.cache / (song_name + ".pt")
+            if not song_cache_path.exists():
+                audio, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"])
+                audio = transform(audio, sr)
+                
+                torch.save(audio, song_cache_path)
+        
+                
+
     for song_name, song in manifest.items():
         if song_name != current_song:
             current_song = song_name
-            current_features, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"])
-            current_features = transform(current_features, sr)
+        
+            if precache_audio:
+                current_features = torch.load(config.paths.cache / (song_name + ".pt"))
+            else:
+                current_features, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"]) # expensive
+                current_features = transform(current_features, sr)
+                
             current_difficulty = None # reset difficulty
 
         for difficulty in song["difficulties"]:
@@ -72,6 +89,7 @@ def feature_generator(manifest):
 
                 # yield example
                 yield features, difficulty_one_hot, label
+
 
     
 class OnsetDataset(torch.utils.data.IterableDataset):
@@ -124,21 +142,11 @@ def worker_init_fn(worker_id):
 
 if __name__ == "__main__":
     import tqdm
+    import cProfile
+
     train_manifest, valid_manifest = train_valid_split()
-
-    train_dataset = OnsetDataset(train_manifest)
-    valid_dataset = OnsetDataset(valid_manifest)
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=512,
-        num_workers=0
-    )
     
-    valid_loader = torch.utils.data.DataLoader(
-        valid_dataset,
-        batch_size=512,
-        num_workers=0
-    )
-    
-    print(config.stats)
+    # cprofile dataset iteration
+    dataset = OnsetDataset(train_manifest)
+    for features, difficulty, label in tqdm.tqdm(dataset):
+        pass
