@@ -11,6 +11,9 @@ import matplotlib.pyplot as plt
 
 from dataset import OnsetDataset, train_valid_split, worker_init_fn
 import time
+import argparse
+
+
 
 from config import config
 
@@ -47,8 +50,6 @@ class OnsetLightningModule(pl.LightningModule):
         self.conv2 = torch.nn.Conv2d(in_channels=10, out_channels=20, kernel_size=(3, 3))
         self.pool2 = torch.nn.MaxPool2d(kernel_size=(1, 3), stride=1) # axis 1 is time, so we don't want to pool over time
     
-    
-
         self.lstm = torch.nn.LSTM(
             input_size=645,
             hidden_size=hidden_size,
@@ -112,6 +113,8 @@ class OnsetLightningModule(pl.LightningModule):
         x = F.relu(self.fc2(x))
         x = F.dropout(x, p=self.dropout)
         x = self.fc3(x)
+        
+        x = F.sigmoid(x)
         
         x = x.squeeze()
 
@@ -228,33 +231,18 @@ def find_lr(train_loader, valid_loader):
 
     return lr_finder
 
-def find_batch_size(train_loader, valid_loader):
+
+
+def train(args, train_loader, valid_loader):
     model = OnsetLightningModule(
-        learning_rate=config.hyperparameters.learning_rate,
-        dropout=config.hyperparameters.dropout,
-        l2=config.hyperparameters.l2,
-        optimizer=config.hyperparameters.optimizer
-    )
-
-    trainer = pl.Trainer(
-        max_epochs=1,
-        logger=False,
-        accelerator=config.train.accelerator,
-        devices=config.train.devices,
-        auto_scale_batch_size="binsearch"
-    )
-
-
-    trainer.tune(model, train_loader, valid_loader)
-
-    return trainer    
-
-def train(train_loader, valid_loader):
-    model = OnsetLightningModule(
-        learning_rate=config.hyperparameters.learning_rate,
-        dropout=config.hyperparameters.dropout,
-        l2=config.hyperparameters.l2,
-        optimizer=config.hyperparameters.optimizer
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        momentum=args.momentum,
+        dropout=args.dropout,
+        optimizer=args.optimizer,
+        hidden_size=100,
+        num_layers=2,
+        bidirectional=True,
     )
 
 
@@ -266,21 +254,26 @@ def train(train_loader, valid_loader):
     
     callbacks = []
 
-    if config.train.checkpoint:
+    if config.callbacks.lr_monitor:
+        lr_monitor = LearningRateMonitor(logging_interval="step")
+        callbacks.append(lr_monitor)
+        
+
+    if args.checkpoint:
         checkpoint_callback = ModelCheckpoint(
-            monitor="valid/epoch_loss",
+            monitor=config.callbacks.checkpoint.monitor,
             dirpath=config.paths.checkpoints,
             filename="onset-{epoch:02d}-{val_loss:.5f}",
-            save_top_k=config.train.top_k,
+            save_top_k=args.top_k,
             mode="min",
         )
 
         callbacks.append(checkpoint_callback)
 
-    if config.train.early_stopping:
+    if args.early_stopping:
         early_stopping = EarlyStopping(
-            monitor="valid/step_loss",
-            patience=config.train.patience,
+            monitor=config.callbacks.early_stopping.monitor,
+            patience=config.callbacks.early_stopping.patience,
             mode="min",
         )
     
@@ -288,24 +281,63 @@ def train(train_loader, valid_loader):
 
     
     trainer = pl.Trainer(
-        accelerator=config.train.accelerator,
-        devices=config.train.devices,
-        max_epochs=config.hyperparameters.epochs,
+        accelerator=args.accelerator,
+        devices=args.devices,
+        max_epochs=args.epochs,
         logger=logger,
         callbacks=callbacks,
-        val_check_interval=0.25, # 
-        precision=config.train.precision,
+        val_check_interval=0.25
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
     return trainer, model
 
+def get_args():
+    parser = argparse.ArgumentParser(description="Train the onset detection model.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # README - ArgumentsDefaultsHelpFormatter requires all arguments use a help string, even if it is empty
+
+    # create groups
+    p_hp = parser.add_argument_group("hyperparameters")
+    p_dataloader = parser.add_argument_group("dataloader")
+    p_callbacks = parser.add_argument_group("callbacks")
+    p_device = parser.add_argument_group("device")
+    
+    empty = " - "
+    
+    # hyperparameters
+    p_hp.add_argument("--epochs", type=int, default=config.hyperparameters.epochs, help=empty)
+    p_hp.add_argument("--batch-size", type=int, default=config.hyperparameters.batch_size, help=empty)
+    p_hp.add_argument("--learning-rate", type=float, default=config.hyperparameters.learning_rate, help=empty)
+    p_hp.add_argument("--weight-decay", type=float, default=config.hyperparameters.weight_decay, help=empty)
+    p_hp.add_argument("--momentum", type=float, default=config.hyperparameters.momentum, help=empty)
+    p_hp.add_argument("--dropout", type=float, default=config.hyperparameters.dropout, help=empty)
+    p_hp.add_argument("--optimizer", type=str, default=config.hyperparameters.optimizer, help=empty)
+
+    # dataloader
+    p_dataloader.add_argument("--num-workers", type=int, default=config.dataloader.num_workers, help=empty)
+    p_dataloader.add_argument("--pin-memory", type=bool, default=config.dataloader.pin_memory, help=empty)
+    
+    # device
+    p_device.add_argument("--accelerator", type=str, default=config.device.accelerator, help=empty)
+    p_device.add_argument("--devices", type=int, default=config.device.devices, help=empty)
+    p_device.add_argument("--strategy", type=int, default=config.device.strategy, help=empty)
+    
+    # callbacks
+    p_callbacks.add_argument("--checkpoint", type=bool, default=config.callbacks.checkpoint.enable, help=empty)
+    p_callbacks.add_argument("--early-stopping", type=bool, default=config.callbacks.early_stopping.enable, help=empty)
+    p_callbacks.add_argument("--top-k", type=int, default=config.callbacks.checkpoint.top_k, help=empty)
+    p_callbacks.add_argument("--patience", type=int, default=config.callbacks.early_stopping.patience, help=empty)
+    
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    train_loader, valid_loader = get_dataloaders(batch_size=config.hyperparameters.batch_size, num_workers=config.train.num_workers, pin_memory=config.train.pin_memory)
+    args = get_args()
 
-    print(len(train_loader), len(valid_loader))
 
-    trainer, model = train(train_loader, valid_loader)
+    train_loader, valid_loader = get_dataloaders(
+        batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=args.pin_memory
+    )
     
+    trainer, model = train(args, train_loader, valid_loader)

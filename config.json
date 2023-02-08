@@ -64,17 +64,32 @@
         "optimizer": "Adam"
     },
 
-    "train": {
+    "callbacks": {
+        "lr_monitor": true,
+
+        "early_stopping":
+        {
+            "enable": false,
+            "monitor": "valid/step_loss",
+            "mode": "min",
+            "patience": 20
+        },
+
+        "checkpoint": {
+            "enable": true,
+            "monitor": "valid/epoch_precision",
+            "top_k": 3
+        }
+    },
+
+    "dataloader": {
+        "num_workers": 0,
+        "pin_memory": false
+    },
+
+    "device": {
         "accelerator": "gpu",
         "devices": 1,
-        "precision": 32,
-        "num_workers": 2,
-        "pin_memory": true,
-        "find_batch_size": false,
-        "find_lr": false,
-        "checkpoint": true,
-        "top_k": 3,
-        "early_stopping": false,
-        "patience": 10
+        "strategy": null
     }
 }
