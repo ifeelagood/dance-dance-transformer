@@ -23,15 +23,16 @@ warnings.filterwarnings("ignore")
 torch.backends.cudnn.benchmark = True
 
 class OnsetLightningModule(pl.LightningModule):
-    def __init__(self, learning_rate=1e-3, dropout=0.5, l2=1e-3, optimizer="Adam", hidden_size=100, num_layers=2, bidirectional=True):
+    def __init__(self, learning_rate=1e-3, weight_decay=1e-3, momentum=0.1, dropout=0.5, optimizer="Adam", hidden_size=100, num_layers=2, bidirectional=True):
         super().__init__()
         
         self.save_hyperparameters()
 
         # parameters
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.momentum = momentum
         self.dropout = dropout
-        self.l2 = l2
         self.optimizer_name = optimizer
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -119,13 +120,17 @@ class OnsetLightningModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         features, difficulty, y = batch
         y_hat = self.forward(features, difficulty)
-        loss = F.binary_cross_entropy_with_logits(y_hat, y)
+        loss = F.binary_cross_entropy(y_hat, y)
+        
+        # compute metrics
         precision = self.binary_precision(y_hat, y)
         recall = self.binary_recall(y_hat, y)    
     
+        # logging
         self.log("train/step_loss", loss)
         self.log("train/step_precision", precision)
         self.log("train/step_recall", recall)
+        
         return {"loss": loss, "y_hat": y_hat, "y": y}
 
     def training_epoch_end(self, outputs):
@@ -133,33 +138,34 @@ class OnsetLightningModule(pl.LightningModule):
         y_hat = torch.cat([x["y_hat"] for x in outputs])
         y = torch.cat([x["y"] for x in outputs])
         
-        # y_hat is already sigmoided
+        # epoch metrics
         acc = self.binary_accuracy(y_hat, y)
         binary_f1_score = self.binary_f1_score(y_hat, y)
         binary_precision = self.binary_precision(y_hat, y)
         binary_recall = self.binary_recall(y_hat, y)
-        binary_auroc = self.binary_auroc(y_hat, y)
 
-
+        # logging
         self.log("train/epoch_loss", loss)
         self.log("train/epoch_acc", acc)
         self.log("train/epoch_f1_score", binary_f1_score)
         self.log("train/epoch_precision", binary_precision)
         self.log("train/epoch_recall", binary_recall)
-        self.log("train/epoch_auroc", binary_auroc)
     
 
     def validation_step(self, batch, batch_idx):
         features, difficulty, y = batch
         y_hat = self.forward(features, difficulty)
-        loss = F.binary_cross_entropy_with_logits(y_hat, y)
+        loss = F.binary_cross_entropy(y_hat, y)
+        
+        # compute metrics
         precision = self.binary_precision(y_hat, y)
         recall = self.binary_recall(y_hat, y)
         
-        
-        self.log("valid/step_precision", precision)
+        # logging
         self.log("valid/step_loss", loss)
+        self.log("valid/step_precision", precision)
         self.log("valid/step_recall", recall)
+        
         return {"loss": loss, "y_hat": y_hat, "y": y}
 
     def validation_epoch_end(self, outputs):
@@ -167,27 +173,30 @@ class OnsetLightningModule(pl.LightningModule):
         y_hat = torch.cat([x["y_hat"] for x in outputs])
         y = torch.cat([x["y"] for x in outputs])
 
+        # compute metrics
         acc = self.binary_accuracy(y_hat, y)
-        auroc = self.binary_auroc(y_hat, y)    
         f1_score = self.binary_f1_score(y_hat, y)
         precision = self.binary_precision(y_hat, y)
         recall = self.binary_recall(y_hat, y)
     
-
-
+        # logging
         self.log("valid/epoch_loss", loss)
         self.log("valid/epoch_acc", acc)
         self.log("valid/epoch_f1_score", f1_score)
         self.log("valid/epoch_precision", precision)
         self.log("valid/epoch_recall", recall)
-        self.log("valid/epoch_auroc", auroc)
 
-
-        # for hyperparameter tuning
-        self.log("hp/epoch_loss", loss)
 
     def configure_optimizers(self):
-        return getattr(torch.optim, self.optimizer_name)(self.parameters(), lr=self.learning_rate, weight_decay=self.l2)
+        kwargs = {"lr": self.learning_rate, "weight_decay": self.weight_decay}
+
+        # add momentum if optimizer is SGD, RMSprop or 
+        if self.optimizer_name in ["SGD", "RMSprop"]:
+            kwargs["momentum"] = self.momentum
+            
+        optimizer = getattr(torch.optim, self.optimizer_name)(self.parameters(), **kwargs)
+        
+        return optimizer
 
 def get_dataloaders(batch_size, num_workers=0, **kwargs):
     train_manifest, valid_manifest = train_valid_split()
