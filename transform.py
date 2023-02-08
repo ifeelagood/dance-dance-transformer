@@ -4,13 +4,18 @@ import torch
 import torchaudio
 import pytorch_lightning as pl
 
+import numpy as np
+
 from config import config
+
+
 
 class OnsetTransform(torch.nn.Module):
     def __init__(self):
         super().__init__()
         
     def forward(self, audio, sr):
+        
         # resample if needed
         if sr != config.audio.sample_rate:
             audio = torchaudio.transforms.Resample(sr, config.audio.sample_rate)(audio)
@@ -44,9 +49,6 @@ class OnsetTransform(torch.nn.Module):
 
         # transpose to (T, F, C)
         features = features.permute(2, 1, 0)
-        
-        # normalize features
-        features = (features - config.audio.mean) / config.audio.std
 
         
         return features

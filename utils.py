@@ -17,12 +17,12 @@ NOTES = (NoteType.TAP, NoteType.HOLD_HEAD, NoteType.TAIL, NoteType.ROLL_HEAD)
 AUDIO_EXTENSIONS = (".mp3", ".ogg", ".wav")
 
 def samples2frames(n_samples : int) -> int:
-    """Convert the number of samples to frame index"""
-    return int(np.ceil(n_samples / config.audio.hop_length)) - config.onset.sequence_length + 1
+    """Convert the total number of samples to the number of feature frames"""
+    return int(np.ceil(n_samples / config.audio.hop_length))
 
 def time2frame(time : float) -> int:
     """Convert time in seconds to feature frame index"""
-    return int(np.floor(time * config.audio.sample_rate / config.audio.hop_length))
+    return int(np.floor(time * config.audio.sample_rate / config.audio.hop_length)) # could be np.ceil
 
 def frame2time(frame_idx : int) -> float:
     """Convert feature frame index to time in seconds"""
@@ -30,7 +30,7 @@ def frame2time(frame_idx : int) -> float:
 
 def is_onset(frame_idx : int, onset_times : np.ndarray) -> bool:
     """Check if a frame is an onset."""
-    return np.any(np.abs(onset_times - frame2time(frame_idx)) < config.onset.threshold)
+    return np.any(np.abs(onset_times - frame2time(frame_idx)) < (config.audio.hop_length / config.audio.sample_rate))
 
 def locate_audio(song_path : os.PathLike) -> os.PathLike:
     """Locate audio file at a given path"""
@@ -40,16 +40,10 @@ def locate_audio(song_path : os.PathLike) -> os.PathLike:
                 return pathlib.Path(song_path, file)
     return None
 
-
-
-
 def get_difficulties(song_path, allowed_difficulties, allowed_types):
     sm, _ = simfile.opendir(song_path)
 
     return list(map(lambda chart : getattr(chart, "difficulty"), filter(lambda chart : chart.stepstype in allowed_types and chart.difficulty in allowed_difficulties, sm.charts)))
-
- 
-
 
 def get_onset_mask(song_path : os.PathLike, difficulty : str, n_frames : int) -> np.ndarray:
     """Generate a mask for onsets"""
@@ -75,13 +69,11 @@ def get_onset_mask(song_path : os.PathLike, difficulty : str, n_frames : int) ->
         if frame_idx < 0:
             raise ValueError("Note time is before audio start")
         elif frame_idx >= n_frames:
-            break
+            raise ValueError("Note time is after audio end")
         
         onset_mask[frame_idx] = True
     
     return onset_mask
-
-
 
 class StatsRecorder:
     def __init__(self, red_dims : tuple):
@@ -123,14 +115,23 @@ class StatsRecorder:
             # update total number of seen samples
             self.nobservations += n
 
-def analyse_dataset(dataloader : torch.utils.data.DataLoader) -> None:
+def analyse_dataset(dataloader : torch.utils.data.DataLoader, max=None) -> None:
     """Get the mean and standard deviation of features in the dataloader"""    
     # input: (B, T, F, C) (batch, time, bins, channels)
     
-    stats = StatsRecorder((0, 1, 2, 3)) # global stats
+    # set normalize and precache to False
+    config.audio.normalize = False
+    
+    
+    stats = StatsRecorder((0, 1, 3)) # z score
 
-    for features, _ in tqdm.tqdm(dataloader, desc='Analysing dataset'):
+
+    for i, (features, _, _) in enumerate(tqdm.tqdm(dataloader, desc='Analysing dataset', total=max if max is not None else len(dataloader))):
         stats.update(features)
+
+        if max is not None and i >= max:
+            break
+    
         
     # save to config.paths.stats as packed npz
 
@@ -142,3 +143,10 @@ def analyse_dataset(dataloader : torch.utils.data.DataLoader) -> None:
     
     print(f"Saved stats to {config.paths.stats}")
 
+    # print shape
+    print(f"Mean shape: {stats.mean.shape}")
+    print(f"Std shape: {stats.std.shape}")
+    
+    # set normalize and precache to True
+    config.audio.normalize = True
+    

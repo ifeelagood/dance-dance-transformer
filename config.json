@@ -40,8 +40,7 @@
         "fmax": 16000.0,
         "log": true,
         "log_eps": 1e-6,
-        "mean": 3.7581453,
-        "std": 3.222148
+        "normalize": true
     },
         
     "charts": {
@@ -50,18 +49,20 @@
     },
 
     "onset": {
-        "sequence_length": 15,
+        "context_radius": 7,
+        "sequence_stride": 1,
         "threshold": 0.01
     },
 
     "hyperparameters": {
         "batch_size": 256,
         "epochs": 100,
-        "learning_rate": 0.05,
+        "learning_rate": 0.1,
         "dropout": 0.5,
-        "weight_decay": 0.01,
-        "momentum": 0.9,
-        "optimizer": "Adam"
+        "weight_decay": 0,
+        "momentum": 0,
+        "optimizer": "SGD",
+        "gradient_clip": 5.0 
     },
 
     "callbacks": {
@@ -84,7 +85,8 @@
 
     "dataloader": {
         "num_workers": 0,
-        "pin_memory": false
+        "pin_memory": true,
+        "precache": true
     },
 
     "device": {

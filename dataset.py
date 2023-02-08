@@ -35,7 +35,7 @@ def train_valid_split(train_size=0.8):
 
     return train_manifest, valid_manifest
 
-def feature_generator(manifest, precache_audio=True):
+def feature_generator(manifest):
     """"""
     current_song = None
     current_difficulty = None
@@ -43,14 +43,22 @@ def feature_generator(manifest, precache_audio=True):
     current_onset_mask = None
     transform = OnsetTransform()
     
+    if config.audio.normalize:
+        with np.load(config.paths.stats) as stats:
+            mean = torch.from_numpy(stats["mean"]).squeeze(0) # TODO: analyse over dataset rather than dataloader to avoid this squeeze
+            std = torch.from_numpy(stats["std"]).squeeze(0)
+            
         
-    if precache_audio:
+    if config.dataloader.precache:
         # load all audio into memory
-        for song_name, song in tqdm.tqdm(manifest.items()):
+        for song_name, song in tqdm.tqdm(manifest.items(), desc="Precaching audio"):
             song_cache_path = config.paths.cache / (song_name + ".pt")
             if not song_cache_path.exists():
                 audio, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"])
                 audio = transform(audio, sr)
+                
+                if config.audio.normalize:
+                    audio = (audio - mean) / std
                 
                 torch.save(audio, song_cache_path)
         
@@ -60,11 +68,14 @@ def feature_generator(manifest, precache_audio=True):
         if song_name != current_song:
             current_song = song_name
         
-            if precache_audio:
+            if config.dataloader.precache:
                 current_features = torch.load(config.paths.cache / (song_name + ".pt"))
             else:
                 current_features, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"]) # expensive
                 current_features = transform(current_features, sr)
+                
+                if config.audio.normalize:
+                    current_features = (current_features - mean) / std
                 
             current_difficulty = None # reset difficulty
 
@@ -73,13 +84,13 @@ def feature_generator(manifest, precache_audio=True):
                 current_difficulty = difficulty
                 current_onset_mask = get_onset_mask(config.paths.raw / song["pack_name"] / song_name, difficulty, song["n_samples"]) # use n_samples rather than current_features.shape[0].
                 
-            for frame_idx in range(0, current_features.shape[0] - config.onset.sequence_length):
+            for frame_idx in range(config.onset.context_radius, current_features.shape[0] - config.onset.context_radius):
                 # get features
-                features = current_features[frame_idx : frame_idx + config.onset.sequence_length]
+                features = current_features[frame_idx - config.onset.context_radius : frame_idx + config.onset.context_radius + 1] # [context_radius, context_radius + 1, context_radius]
 
                 # get single label
-                label = current_onset_mask[frame_idx + config.onset.sequence_length - 1] # last frame in sequence.
-
+                label = current_onset_mask[frame_idx]
+                  
                 # label from bool to float
                 label = label.astype(np.float32)
 
@@ -137,7 +148,6 @@ def worker_init_fn(worker_id):
     if worker_info.num_workers > 1:
         chunk = get_chunk(worker_info.dataset.manifest, worker_info.id, worker_info.num_workers)
         worker_info.dataset.manifest = chunk
-    
 
 
 if __name__ == "__main__":
@@ -148,5 +158,11 @@ if __name__ == "__main__":
     
     # cprofile dataset iteration
     dataset = OnsetDataset(train_manifest)
-    for features, difficulty, label in tqdm.tqdm(dataset):
-        pass
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+    )
+    
+    for features, difficulty, label in tqdm.tqdm(dataloader):
+        print(features.shape, difficulty.shape, label.shape)
+        break

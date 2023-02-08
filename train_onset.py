@@ -16,6 +16,8 @@ import argparse
 
 
 from config import config
+from models.onset import LSTM_A, CNN_A, Classifier
+
 
 # catch warnings 
 import warnings 
@@ -26,7 +28,7 @@ warnings.filterwarnings("ignore")
 torch.backends.cudnn.benchmark = True
 
 class OnsetLightningModule(pl.LightningModule):
-    def __init__(self, learning_rate=1e-3, weight_decay=1e-3, momentum=0.1, dropout=0.5, optimizer="Adam", hidden_size=100, num_layers=2, bidirectional=True):
+    def __init__(self, learning_rate=1e-3, weight_decay=0, momentum=0, dropout=0.5, optimizer="Adam", hidden_size=200, num_layers=2, bidirectional=True):
         super().__init__()
         
         self.save_hyperparameters()
@@ -42,27 +44,15 @@ class OnsetLightningModule(pl.LightningModule):
         self.bidirectional = bidirectional
 
         # for graphing forward pass
-        self.example_input_array = torch.Tensor(1, config.onset.sequence_length, config.audio.n_bins, len(config.audio.n_ffts))
+        self.example_input_array = torch.Tensor(1, config.onset.context_radius * 2 + 1, config.audio.n_bins, len(config.audio.n_ffts))
 
         # layers
-        self.conv1 = torch.nn.Conv2d(in_channels=3, out_channels=10, kernel_size=(3, 7))
-        self.pool1 = torch.nn.MaxPool2d(kernel_size=(1, 3), stride=2) 
-        self.conv2 = torch.nn.Conv2d(in_channels=10, out_channels=20, kernel_size=(3, 3))
-        self.pool2 = torch.nn.MaxPool2d(kernel_size=(1, 3), stride=1) # axis 1 is time, so we don't want to pool over time
+        self.cnn = CNN_A(in_channels=len(config.audio.n_ffts))
     
-        self.lstm = torch.nn.LSTM(
-            input_size=645,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            bidirectional=bidirectional,
-            dropout=dropout
-        )
-
-
-        self.fc1 = torch.nn.Linear(200, 256)
-        self.fc2 = torch.nn.Linear(256, 128)
-        self.fc3 = torch.nn.Linear(128, 1)
+        self.lstm = LSTM_A(input_size=165, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout, bidirectional=bidirectional)
+    
+        self.classifier = Classifier(input_size=200, output_size=1, return_logits=False)
+    
 
         self.binary_accuracy = BinaryAccuracy()
         self.binary_precision = BinaryPrecision()
@@ -83,15 +73,13 @@ class OnsetLightningModule(pl.LightningModule):
         # permute to (B, C, T, F)
         x = x.permute(0, 3, 1, 2) 
     
-        # conv layers
-        x = self.pool1(F.relu(self.conv1(x)))
-        x = self.pool2(F.relu(self.conv2(x)))
+        # CNN
+        x = self.cnn(x)
 
-        # permute to (B, T, F, C) for LSTM
+        # permute to (B, T, F, C), then flatten to (B, T, F*C)
         x = x.permute(0, 2, 3, 1)
-
-        # flatten to (B, T, F*C)
         x = x.reshape(x.size(0), x.size(1), -1)
+        
 
         # add onehot difficulty as a feature to each frame
         if difficulty is not None:
@@ -101,23 +89,14 @@ class OnsetLightningModule(pl.LightningModule):
             x = torch.cat([x, torch.zeros(x.size(0), x.size(1), 5, device=x.device)], dim=2)
 
         # lstm
-        hidden = self.init_hidden(x.size(0), x.device)
-        x, hidden = self.lstm(x, hidden)
+        x = self.lstm(x)
     
         # get last frame for FC layers
         x = x[:, -1, :]
 
         # FC layers
-        x = F.relu(self.fc1(x))
-        x = F.dropout(x, p=self.dropout)
-        x = F.relu(self.fc2(x))
-        x = F.dropout(x, p=self.dropout)
-        x = self.fc3(x)
-        
-        x = F.sigmoid(x)
-        
-        x = x.squeeze()
-
+        x = self.classifier(x).squeeze(1)
+    
         return x
 
     def training_step(self, batch, batch_idx):
@@ -159,7 +138,7 @@ class OnsetLightningModule(pl.LightningModule):
         features, difficulty, y = batch
         y_hat = self.forward(features, difficulty)
         loss = F.binary_cross_entropy(y_hat, y)
-        
+            
         # compute metrics
         precision = self.binary_precision(y_hat, y)
         recall = self.binary_recall(y_hat, y)
@@ -212,26 +191,6 @@ def get_dataloaders(batch_size, num_workers=0, **kwargs):
 
     return train_loader, valid_loader
 
-def find_lr(train_loader, valid_loader):
-    model = OnsetLightningModule(
-        learning_rate=config.hyperparameters.learning_rate,
-        dropout=config.hyperparameters.dropout,
-        l2=config.hyperparameters.l2,
-        optimizer=config.hyperparameters.optimizer
-    )
-
-    trainer = pl.Trainer(
-        max_epochs=1,
-        logger=False,
-        accelerator=config.train.accelerator,
-        devices=config.train.devices,
-    )
-    
-    lr_finder = trainer.tuner.lr_find(model, train_loader, valid_loader, num_training=10000)
-
-    return lr_finder
-
-
 
 def train(args, train_loader, valid_loader):
     model = OnsetLightningModule(
@@ -240,9 +199,9 @@ def train(args, train_loader, valid_loader):
         momentum=args.momentum,
         dropout=args.dropout,
         optimizer=args.optimizer,
-        hidden_size=100,
+        hidden_size=200,
         num_layers=2,
-        bidirectional=True,
+        bidirectional=False,
     )
 
 
@@ -250,7 +209,8 @@ def train(args, train_loader, valid_loader):
         save_dir=config.paths.logs,
         name="onset",
         log_graph=True
-        )
+    )
+    
     
     callbacks = []
 
@@ -286,10 +246,19 @@ def train(args, train_loader, valid_loader):
         max_epochs=args.epochs,
         logger=logger,
         callbacks=callbacks,
-        val_check_interval=0.25
+        limit_train_batches=10000,
+        val_check_interval=4000,
+        gradient_clip_val=args.gradient_clip,
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+
+    # save best model
+    if args.checkpoint:
+        best_model_path = trainer.checkpoint_callback.best_model_path
+        print(f"Best model path: {best_model_path}")
+        
+    
 
     return trainer, model
 
@@ -314,6 +283,7 @@ def get_args():
     p_hp.add_argument("--momentum", type=float, default=config.hyperparameters.momentum, help=empty)
     p_hp.add_argument("--dropout", type=float, default=config.hyperparameters.dropout, help=empty)
     p_hp.add_argument("--optimizer", type=str, default=config.hyperparameters.optimizer, help=empty)
+    p_hp.add_argument("--gradient-clip", type=float, default=config.hyperparameters.gradient_clip, help=empty)
 
     # dataloader
     p_dataloader.add_argument("--num-workers", type=int, default=config.dataloader.num_workers, help=empty)
