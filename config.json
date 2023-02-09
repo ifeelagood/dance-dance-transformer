@@ -55,14 +55,15 @@
     },
 
     "hyperparameters": {
-        "batch_size": 256,
+        "batch_size": 512,
         "epochs": 100,
         "learning_rate": 0.1,
         "dropout": 0.5,
         "weight_decay": 0,
         "momentum": 0,
         "optimizer": "SGD",
-        "gradient_clip": 5.0 
+        "gradient_clip": 5.0,
+        "accumulate_grad_batches": 1
     },
 
     "callbacks": {

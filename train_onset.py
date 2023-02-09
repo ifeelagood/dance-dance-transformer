@@ -4,8 +4,10 @@ import json
 import torch 
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+
+import wandb
 
 from torchmetrics.classification import BinaryAUROC, BinaryAccuracy, BinaryF1Score, BinaryPrecision, BinaryRecall
 import torchmetrics.functional as M
@@ -179,6 +181,25 @@ def get_dataloaders(batch_size, num_workers=0, **kwargs):
 
 
 def train(args, train_loader, valid_loader):
+    # init wandb
+    wandb.init(project="onset", entity="ifag")
+    
+    # log important hyperparameters that are not stored in lightning module
+    wandb.config.update({
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "accumulate_grad_batches": args.accumulate_grad_batches,
+        "gradient_clip": args.gradient_clip,
+        "sample_rate": config.audio.sample_rate,
+        "n_ffts": config.audio.n_ffts,
+        "hop_length": config.audio.hop_length,
+        "n_bins": config.audio.n_bins,
+        "log_scale": config.audio.log,
+        "normalize": config.audio.normalize,
+        "context_radius": config.onset.context_radius,
+    })
+    
+    
     model = OnsetLightningModule(
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
@@ -191,11 +212,7 @@ def train(args, train_loader, valid_loader):
     )
 
 
-    logger = TensorBoardLogger(
-        save_dir=config.paths.logs,
-        name="onset",
-        log_graph=True
-    )
+    logger = WandbLogger(project="onset", entity="ifag", log_model=True)
     
     
     callbacks = []
@@ -233,6 +250,7 @@ def train(args, train_loader, valid_loader):
         callbacks=callbacks,
         val_check_interval=4000,
         gradient_clip_val=args.gradient_clip,
+        accumulate_grad_batches=args.accumulate_grad_batches,
         log_every_n_steps=100
     )
 
@@ -245,17 +263,72 @@ def train(args, train_loader, valid_loader):
         
     return trainer, model
 
+def find_lr(args, train_loader, valid_loader):
+    
+
+    trainer = pl.Trainer(
+        accelerator=args.accelerator,
+        devices=args.devices,
+        gradient_clip_val=args.gradient_clip,
+        accumulate_grad_batches=args.accumulate_grad_batches,
+        log_every_n_steps=100,
+        max_epochs=1,
+        max_steps=10000
+    )
+    
+    model = OnsetLightningModule(
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        momentum=args.momentum,
+        dropout=args.dropout,
+        optimizer=args.optimizer,
+        hidden_size=200,
+        num_layers=2,
+        bidirectional=False,
+    )
+
+    lr_finder = trainer.tuner.lr_find(model, train_dataloaders=train_loader, val_dataloaders=valid_loader, num_training=10000, min_lr=1e-6, max_lr=1e-1)
+    fig = lr_finder.plot(suggest=True)
+    plt.show()
+
+    fig.show()
+    fig.savefig("lr_finder.png")
+
+    print(f"suggested learning rate: {lr_finder.suggestion()}")
+
+    return lr_finder
+
 def objective(trial):
+    wandb.init(project="onset", entity="ifag")
+    
+
+    
     # get trial hyperparameters
     hp = {
         "learning_rate": trial.suggest_loguniform("learning_rate", 1e-5, 1.0),
         "weight_decay": trial.suggest_loguniform("weight_decay", 1e-5, 1.0),
         "momentum": trial.suggest_uniform("momentum", 0.0, 1.0),
-        "dropout": trial.suggest_uniform("dropout", 0.2, 1.0),
+        "dropout": trial.suggest_uniform("dropout", 0.0, 1.0),
         "optimizer": trial.suggest_categorical("optimizer", ["SGD", "Adam", "AdamW"]),
 #        "bidirectional": trial.suggest_categorical("bidirectional", [True, False]),
         "gradient_clip": trial.suggest_uniform("gradient_clip", 0.0, 10.0),
+        "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
     }
+
+    # add batch size to wandb config
+    wandb.config.update({
+        "epochs": args.epochs,
+        "batch_size": hp["batch_size"],
+        "gradient_clip": hp["gradient_clip"],
+        "accumulate_grad_batches": args.accumulate_grad_batches,
+        "sample_rate": config.audio.sample_rate,
+        "n_ffts": config.audio.n_ffts,
+        "hop_length": config.audio.hop_length,
+        "n_bins": config.audio.n_bins,
+        "log_scale": config.audio.log,
+        "normalize": config.audio.normalize,
+        "context_radius": config.onset.context_radius,
+    })
 
     
     model = OnsetLightningModule(
@@ -272,20 +345,20 @@ def objective(trial):
     
     train_loader, valid_loader = get_dataloaders(batch_size=config.hyperparameters.batch_size, num_workers=config.dataloader.num_workers, pin_memory=config.dataloader.pin_memory)
  
+    logger = WandbLogger(name="tune", project="onset", entity="ifag", log_model=True)
+ 
     trainer = pl.Trainer(
         accelerator=config.device.accelerator,
         devices=config.device.devices,
-
-        max_epochs=10,
-        logger=True,
+        max_epochs=args.max_epochs,
+        logger=logger,
         callbacks=[PyTorchLightningPruningCallback(trial, monitor=config.tuning.pruning.monitor)],
         val_check_interval=4000,
         gradient_clip_val=hp["gradient_clip"],
-        log_every_n_steps=100
+        accumulate_grad_batches=config.hyperparameters.accumulate_grad_batches,
+        log_every_n_steps=100,
     )
-    
-    trainer.logger.log_hyperparams(hp)
-    
+        
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
     return trainer.callback_metrics[config.tuning.monitor]
@@ -297,7 +370,7 @@ def get_args():
     # README - ArgumentsDefaultsHelpFormatter requires all arguments use a help string, even if it is empty
 
     # train/optimise
-    parser.add_argument("action", type=str, choices=["train", "tune"], help="Whether to train or tune the model.")
+    parser.add_argument("action", type=str, choices=["train", "tune", "find_lr"], help="Whether to train or tune the model.")
 
 
     # create groups
@@ -318,6 +391,7 @@ def get_args():
     p_hp.add_argument("--dropout", type=float, default=config.hyperparameters.dropout, help=empty)
     p_hp.add_argument("--optimizer", type=str, default=config.hyperparameters.optimizer, help=empty)
     p_hp.add_argument("--gradient-clip", type=float, default=config.hyperparameters.gradient_clip, help=empty)
+    p_hp.add_argument("--accumulate-grad-batches", type=int, default=config.hyperparameters.accumulate_grad_batches, help=empty)
 
     # dataloader
     p_dataloader.add_argument("--num-workers", type=int, default=config.dataloader.num_workers, help=empty)
@@ -383,3 +457,9 @@ if __name__ == "__main__":
         with open("best_trial.json", "w") as f:
             json.dump(trial.params, f, indent=4)
         
+    elif args.action == "find_lr":
+        train_loader, valid_loader = get_dataloaders(
+            batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=args.pin_memory
+        )
+        
+        find_lr(args, train_loader, valid_loader)

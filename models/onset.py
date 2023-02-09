@@ -72,18 +72,25 @@ class Classifier(torch.nn.Module):
     
     """
 
-    def __init__(self, input_size=100, output_size=1, return_logits=False):
+    def __init__(self, input_size=100, output_size=1, dropout=0.5, return_logits=False):
         super().__init__()
         
+        self.dropout = torch.nn.Dropout(p=dropout)
         self.return_logits = return_logits
-        
+
         self.fc1 = torch.nn.Linear(input_size, 256)
         self.fc2 = torch.nn.Linear(256, 128)
         self.fc3 = torch.nn.Linear(128, output_size)
         
+
+        
     def forward(self, x):
         x = F.relu(self.fc1(x))
+        x = self.dropout(x)
         x = F.relu(self.fc2(x))
+        x = self.dropout(x)
+
+
         x = self.fc3(x)
         
         if not self.return_logits:
