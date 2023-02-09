@@ -9,7 +9,7 @@
         "data": "data",
         "raw": "data/raw",
         "manifest": "data/manifest.json",
-        "stats": "data/stats.npz",
+        "stats": "stats.npz",
         "logs": "lightning_logs",
         "checkpoints": "checkpoints",
         "webdataset": "data/webdataset"
