@@ -1,11 +1,13 @@
 import torch
 import torchaudio
+import webdataset as wds
 
 import numpy as np
 import json
 
 from config import config
 from utils import *
+import glob
 
 
 from transform import OnsetTransform
@@ -35,134 +37,145 @@ def train_valid_split(train_size=0.8):
 
     return train_manifest, valid_manifest
 
-def feature_generator(manifest):
-    """"""
-    current_song = None
-    current_difficulty = None
-    current_features = None
-    current_onset_mask = None
-    transform = OnsetTransform()
+def is_dataset_updated(split):
+    info_path = config.paths.webdataset / (split + ".json")
+    
+    if not info_path.exists():
+        return False
+
+    with open(info_path) as f:
+        dataset_info = json.load(f)
+
+    # check if dataset info matches config
+    if dataset_info["audio"] != config.audio.__dict__:
+        return False
+    if dataset_info["packs"] != config.dataset.packs:
+        return False
     
     if config.audio.normalize:
         with np.load(config.paths.stats) as stats:
-            mean = torch.from_numpy(stats["mean"]).squeeze(0) # TODO: analyse over dataset rather than dataloader to avoid this squeeze
+            mean = torch.from_numpy(stats["mean"]).squeeze(0)
             std = torch.from_numpy(stats["std"]).squeeze(0)
-            
-        
-    if config.dataloader.precache:
-        # load all audio into memory
-        for song_name, song in tqdm.tqdm(manifest.items(), desc="Precaching audio"):
-            song_cache_path = config.paths.cache / (song_name + ".pt")
-            if not song_cache_path.exists():
-                audio, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"])
-                audio = transform(audio, sr)
-                
-                if config.audio.normalize:
-                    audio = (audio - mean) / std
-                
-                torch.save(audio, song_cache_path)
-        
-                
 
-    for song_name, song in manifest.items():
-        if song_name != current_song:
-            current_song = song_name
-        
-            if config.dataloader.precache:
-                current_features = torch.load(config.paths.cache / (song_name + ".pt"))
-            else:
-                current_features, sr = torchaudio.load(config.paths.raw / song["pack_name"] / song_name / song["audio_name"]) # expensive
-                current_features = transform(current_features, sr)
-                
-                if config.audio.normalize:
-                    current_features = (current_features - mean) / std
-                
-            current_difficulty = None # reset difficulty
+        if dataset_info["mean"] != mean.numpy().tolist():
+            return False
+        if dataset_info["std"] != std.numpy().tolist():
+            return False
 
-        for difficulty in song["difficulties"]:
-            if difficulty != current_difficulty: 
-                current_difficulty = difficulty
-                current_onset_mask = get_onset_mask(config.paths.raw / song["pack_name"] / song_name, difficulty, song["n_samples"]) # use n_samples rather than current_features.shape[0].
-                
-            for frame_idx in range(config.onset.context_radius, current_features.shape[0] - config.onset.context_radius):
-                # get features
-                features = current_features[frame_idx - config.onset.context_radius : frame_idx + config.onset.context_radius + 1] # [context_radius, context_radius + 1, context_radius]
+    return True
 
-                # get single label
-                label = current_onset_mask[frame_idx]
-                  
-                # label from bool to float
-                label = label.astype(np.float32)
+def save_dataset_info(split, num_frames=None, mean=None, std=None):
+    dataset_info = {
+        "audio": config.audio.__dict__,
+        "packs": config.dataset.packs,
+        "mean": mean.numpy().tolist() if mean is not None else None,
+        "std": std.numpy().tolist() if std is not None else None,
+        "total_frames": num_frames,
+    }
+
+    with open(config.paths.webdataset / (split + ".json"), "w") as f:
+        json.dump(dataset_info, f)
+
+
+def create_webdataset(manifest, split):
+    dataset_path = config.paths.webdataset / f"{split}-%06d.tar"
+
+    sink = wds.ShardWriter(str(dataset_path), maxcount=config.dataloader.shard_size)
+    transform = OnsetTransform()
+
+
+    total_frames = 0
+    for i, (song_name, song) in enumerate(tqdm.tqdm(manifest.items(), desc="Creating webdataset")):
+        # load audio
+        audio_path = config.paths.raw / song["pack_name"] / song_name / song["audio_name"]
+        audio, sr = torchaudio.load(audio_path)
+
+        # get features
+        features = transform(audio, sr)
+
+        # get total number of frames, add to total
+        num_frames = features.shape[0] # total number of frames
+        total_frames += num_frames
+
+        # create onset and difficulty masks
+        onsets = np.zeros((len(song["difficulties"]), num_frames), dtype=np.float32)
+        difficulties = np.array([config.charts.difficulties.index(difficulty) for difficulty in song["difficulties"]])
+
+        for i, difficulty in enumerate(song["difficulties"]):
+            # get onset mask
+            onsets[i] = get_onset_mask(config.paths.raw / song["pack_name"] / song_name, difficulty, num_frames)
+
+        # onset and difficulty to tensor
+        onsets = torch.from_numpy(onsets)
+        difficulties = torch.from_numpy(difficulties)
+
+        # save to webdataset
+        sample = {
+            "__key__": song_name,
+            "features.pth": features,
+            "onsets.pth": onsets,
+            "difficulties.pth":  difficulties,
+            "num_frames.cls": features.shape[0],
+        }
+
+        sink.write(sample)
+    
+    sink.close()
+    save_dataset_info(split, total_frames)
+
+
+def sample_iterator(src):
+    if config.audio.normalize:
+        if not config.paths.stats.exists():
+            raise FileNotFoundError("config.audio.normalize is True, but stats file does not exist. Please generate with utils.analyse_dataset()")
+
+        with np.load(config.paths.stats) as stats:
+            mean = torch.from_numpy(stats["mean"]).squeeze(0)
+            std = torch.from_numpy(stats["std"]).squeeze(0)
+
+    for (features, onsets, difficulties, num_frames) in src:    
+        for i in range(difficulties.shape[0]):
+            for j in range(config.onset.context_radius, num_frames - config.onset.context_radius):
+                feature = features[j - config.onset.context_radius : j + config.onset.context_radius + 1]
+                onset = onsets[i, j]
 
                 # one hot difficulty
-                difficulty_one_hot = np.zeros(len(config.charts.difficulties), dtype=np.float32)
-                difficulty_one_hot[config.charts.difficulties.index(difficulty)] = 1
+                difficulty = torch.zeros(len(config.charts.difficulties))
+                difficulty[difficulties[i]] = 1
+                
+                # normalize
+                if config.audio.normalize:
+                    feature = (feature - mean) / std
 
-                # yield example
-                yield features, difficulty_one_hot, label
+                yield feature, difficulty, onset
 
+def get_dataset(split, batch_size=None):
+    shards = list(map(str, config.paths.webdataset.glob(f"{split}-" + "[0-9]" * 6 + ".tar")))
 
+    dataset = wds.WebDataset(shards, nodesplitter=wds.split_by_node)
+    dataset = dataset.compose(wds.split_by_worker)
+    dataset = dataset.decode()
+    dataset = dataset.to_tuple("features.pth", "onsets.pth", "difficulties.pth", "num_frames.cls")
+    dataset = dataset.compose(sample_iterator)
     
-class OnsetDataset(torch.utils.data.IterableDataset):
-    def __init__(self, manifest):
-        super().__init__()
-        self.manifest = manifest
+    if batch_size:
+        dataset = dataset.batched(batch_size)
 
-    def __len__(self):
-        return np.sum([
-            samples2frames(song["n_samples"]) * len(song["difficulties"]) 
-            for song in self.manifest.values()
-        ])
-
-    def __iter__(self):
-        return feature_generator(self.manifest)
-
-
-def get_chunk(manifest, worker_id, num_workers):
-    # cut manifest into a chunk
-    n_songs = len(manifest)
-    chunk_size = n_songs // num_workers # integer division
-    overflow = n_songs % num_workers    # remainder
-    
-    # get start and end indices
-    start_idx = worker_id * chunk_size 
-    end_idx = start_idx + chunk_size
-    
-    # add overflow to last chunk
-    if worker_id == num_workers - 1:
-        end_idx += overflow
-
-    # get the chunk
-    chunk = {k: manifest[k] for k in list(manifest.keys())[start_idx:end_idx]}
-    
-    return chunk
-
-
-# to be used above with num_workers > 0
-def worker_init_fn(worker_id):
-    worker_info = torch.utils.data.get_worker_info()
-
-    if worker_info is None: # single process
-        return
-    
-    if worker_info.num_workers > 1:
-        chunk = get_chunk(worker_info.dataset.manifest, worker_info.id, worker_info.num_workers)
-        worker_info.dataset.manifest = chunk
-
+    return dataset
 
 if __name__ == "__main__":
-    import tqdm
-    import cProfile
+    if not config.paths.webdataset.exists():
+        config.paths.webdataset.mkdir()
 
     train_manifest, valid_manifest = train_valid_split()
     
-    # cprofile dataset iteration
-    dataset = OnsetDataset(train_manifest)
+    create_webdataset(train_manifest, "train")
+    create_webdataset(valid_manifest, "valid")
 
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-    )
+    train_dataset = get_dataset("train")
+    valid_dataset = get_dataset("valid")
     
-    for features, difficulty, label in tqdm.tqdm(dataloader):
-        print(features.shape, difficulty.shape, label.shape)
-        break
+    for i, (feature, difficulty, onset) in tqdm.tqdm(enumerate(train_dataset)):
+        print(feature.shape, difficulty.shape, onset.shape)
+        if i == 10:
+            break
