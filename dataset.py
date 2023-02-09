@@ -8,6 +8,8 @@ import json
 from config import config
 from utils import *
 import glob
+import time
+import datetime
 
 
 from transform import OnsetTransform
@@ -37,75 +39,67 @@ def train_valid_split(train_size=0.8):
 
     return train_manifest, valid_manifest
 
-def is_dataset_updated(split):
-    info_path = config.paths.webdataset / (split + ".json")
-    
-    if not info_path.exists():
-        return False
 
-    with open(info_path) as f:
-        dataset_info = json.load(f)
+def get_shard_filename(split : str) -> str:
+    name = config.dataset.shard.name
+    zero_pad = config.dataset.shard.zero_pad
 
-    # check if dataset info matches config
-    if dataset_info["audio"] != config.audio.__dict__:
-        return False
-    if dataset_info["packs"] != config.dataset.packs:
-        return False
-    
-    if config.audio.normalize:
-        with np.load(config.paths.stats) as stats:
-            mean = torch.from_numpy(stats["mean"]).squeeze(0)
-            std = torch.from_numpy(stats["std"]).squeeze(0)
+    return name.format(split=split, index="%0" + str(zero_pad) + "d") # TODO fix hack
 
-        if dataset_info["mean"] != mean.numpy().tolist():
-            return False
-        if dataset_info["std"] != std.numpy().tolist():
-            return False
-
-    return True
-
-def save_dataset_info(split, num_frames=None, mean=None, std=None):
-    dataset_info = {
-        "audio": config.audio.__dict__,
-        "packs": config.dataset.packs,
-        "mean": mean.numpy().tolist() if mean is not None else None,
-        "std": std.numpy().tolist() if std is not None else None,
-        "total_frames": num_frames,
+def get_info() -> dict:
+    info = {
+        "created_at": datetime.datetime.now(),
+        "shard": config.dataset.shard.__dict__,
+        "audio": config.audio.__dict__
     }
 
-    with open(config.paths.webdataset / (split + ".json"), "w") as f:
-        json.dump(dataset_info, f)
+    return info
+
+def has_info_changed() -> bool:
+    """Returns True if generate information has changed."""
+
+    current_info = get_info()
+
+    with open(config.paths.info, 'r') as f:
+        generated_info = json.load(f)
+
+    return current_info["shard"] == generated_info["shard"] and current_info["audio"] == generated_info["audio"]
 
 
-def create_webdataset(manifest, split):
-    dataset_path = config.paths.webdataset / f"{split}-%06d.tar"
+def generate_shards(manifest : dict, split : str):
+    """Generate shards for the dataset."""
 
-    sink = wds.ShardWriter(str(dataset_path), maxcount=config.dataloader.shard_size)
+    assert split in ("train", "valid"), "Split must be either 'train' or 'valid'"
+
+    dataset_path = config.paths.shards / get_shard_filename(split)
+
+    sink = wds.ShardWriter(str(dataset_path), maxcount=config.dataset.shard.size)
     transform = OnsetTransform()
 
-
     total_frames = 0
-    for i, (song_name, song) in enumerate(tqdm.tqdm(manifest.items(), desc="Creating webdataset")):
+    for i, (song_name, song) in enumerate(tqdm.tqdm(manifest.items(), desc=f"Creating dataset '{split}'")):
+        # get path to song
+        song_path = config.paths.raw / song["pack_name"] / song_name
+        
         # load audio
-        audio_path = config.paths.raw / song["pack_name"] / song_name / song["audio_name"]
-        audio, sr = torchaudio.load(audio_path)
+        audio, sr = torchaudio.load(song_path / song["audio_name"])
 
         # get features
         features = transform(audio, sr)
 
         # get total number of frames, add to total
-        num_frames = features.shape[0] # total number of frames
+        num_frames = features.shape[0]
         total_frames += num_frames
 
-        # create onset and difficulty masks
+        # create onset masks for each difficulty
         onsets = np.zeros((len(song["difficulties"]), num_frames), dtype=np.float32)
+        for i, difficulty in enumerate(song["difficulties"]):
+            onsets[i] = get_onset_mask(song_path, difficulty, num_frames)
+
+        # get the chart difficulties
         difficulties = np.array([config.charts.difficulties.index(difficulty) for difficulty in song["difficulties"]])
 
-        for i, difficulty in enumerate(song["difficulties"]):
-            # get onset mask
-            onsets[i] = get_onset_mask(config.paths.raw / song["pack_name"] / song_name, difficulty, num_frames)
-
-        # onset and difficulty to tensor
+        # to tensors
         onsets = torch.from_numpy(onsets)
         difficulties = torch.from_numpy(difficulties)
 
@@ -121,7 +115,12 @@ def create_webdataset(manifest, split):
         sink.write(sample)
     
     sink.close()
-    save_dataset_info(split, total_frames)
+
+def delete_shards():
+    for file in config.paths.shards.iterdir():
+        if file.is_file():
+            file.unlink()
+
 
 
 def sample_iterator(src):
@@ -150,7 +149,7 @@ def sample_iterator(src):
                 yield feature, difficulty, onset
 
 def get_dataset(split):
-    shards = list(map(str, config.paths.webdataset.glob(f"{split}-" + "[0-9]" * 6 + ".tar")))
+    shards = list(map(str, config.paths.shards.glob(f"{split}-" + "[0-9]" * 6 + ".tar")))
 
     dataset = wds.WebDataset(shards, nodesplitter=wds.split_by_node)
     dataset = dataset.compose(wds.split_by_worker)
@@ -162,25 +161,19 @@ def get_dataset(split):
 
 
 if __name__ == "__main__":
-    if not config.paths.webdataset.exists():
-        config.paths.webdataset.mkdir()
+    if not config.paths.shards.exists():
+        config.paths.shards.mkdir()
 
     train_manifest, valid_manifest = train_valid_split()
     
-    # if not is_dataset_updated("train"):
-    #     create_webdataset(train_manifest, "train")
-
-    # if not is_dataset_updated("valid"):
-    #     create_webdataset(valid_manifest, "valid")
     
     train_dataset = get_dataset("valid")
 
     print("Train dataset:")
 
-    with open(config.paths.webdataset / "train.json", 'r') as f:
+    with open(config.paths.shards / "train.json", 'r') as f:
         dataset_info = json.load(f)
 
 
     dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, num_workers=0)
 
-    

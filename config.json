@@ -12,7 +12,8 @@
         "stats": "stats.npz",
         "logs": "lightning_logs",
         "checkpoints": "checkpoints",
-        "webdataset": "data/webdataset"
+        "shards": "data/webdataset",
+        "info": "data/info.json"
     },
 
     "dataset": {
@@ -28,7 +29,14 @@
                 "https://search.stepmaniaonline.net/link/In The Groove 1.zip",
                 "https://search.stepmaniaonline.net/link/In The Groove 2.zip"
             ]
+        },
+
+        "shard": {
+            "size": 10,
+            "name": "{split}-{index}.tar",
+            "zero_pad": 3
         }
+
     },
 
     "audio": { 
@@ -40,7 +48,7 @@
         "fmax": 16000.0,
         "log": true,
         "log_eps": 1e-6,
-        "normalize": false
+        "normalize": true
     },
         
     "charts": {
@@ -85,8 +93,7 @@
 
     "dataloader": {
         "num_workers": 0,
-        "pin_memory": true,
-        "shard_size": 10
+        "pin_memory": true
     },
 
     "device": {
