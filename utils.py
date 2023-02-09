@@ -62,16 +62,17 @@ def get_onset_mask(song_path : os.PathLike, difficulty : str, n_frames : int) ->
     ])
     
     # calculate onset mask
-    onset_mask = np.zeros(n_frames, dtype=np.bool)
+    onset_mask = np.zeros(n_frames, dtype=np.float32)
     for note_time in note_times:
         frame_idx = time2frame(note_time)
-        
+    
         if frame_idx < 0:
             raise ValueError("Note time is before audio start")
         elif frame_idx >= n_frames:
-            raise ValueError("Note time is after audio end")
-        
-        onset_mask[frame_idx] = True
+            # raise ValueError("Note time is after audio end")
+            continue
+    
+        onset_mask[frame_idx] = 1
     
     return onset_mask
 
@@ -115,38 +116,25 @@ class StatsRecorder:
             # update total number of seen samples
             self.nobservations += n
 
-def analyse_dataset(dataloader : torch.utils.data.DataLoader, max=None) -> None:
+def analyse_dataset(dataloader, max=None) -> None:
     """Get the mean and standard deviation of features in the dataloader"""    
     # input: (B, T, F, C) (batch, time, bins, channels)
-    
-    # set normalize and precache to False
-    config.audio.normalize = False
-    
-    
-    stats = StatsRecorder((0, 1, 3)) # z score
 
+    assert not config.audio.normalize, "Cannot caculate stats on normalised data!"
+    
+    stats = StatsRecorder((0, 1, 3)) # z score for each band.
 
-    for i, (features, _, _) in enumerate(tqdm.tqdm(dataloader, desc='Analysing dataset', total=max if max is not None else len(dataloader))):
+    for i, (features, _, _) in enumerate(tqdm.tqdm(dataloader, desc='Analysing dataset', total=max)):
         stats.update(features)
-
         if max is not None and i >= max:
             break
-    
         
     # save to config.paths.stats as packed npz
 
     np.savez_compressed(
         config.paths.stats,
-        mean=stats.mean.numpy(),
-        std=stats.std.numpy(),
+        mean=stats.mean.squeeze().numpy(),
+        std=stats.std.squeeze().numpy()
     )
     
     print(f"Saved stats to {config.paths.stats}")
-
-    # print shape
-    print(f"Mean shape: {stats.mean.shape}")
-    print(f"Std shape: {stats.std.shape}")
-    
-    # set normalize and precache to True
-    config.audio.normalize = True
-    

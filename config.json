@@ -12,7 +12,7 @@
         "stats": "data/stats.npz",
         "logs": "lightning_logs",
         "checkpoints": "checkpoints",
-        "cache": "cache"
+        "webdataset": "data/webdataset"
     },
 
     "dataset": {
@@ -40,7 +40,7 @@
         "fmax": 16000.0,
         "log": true,
         "log_eps": 1e-6,
-        "normalize": true
+        "normalize": false
     },
         
     "charts": {
@@ -86,7 +86,7 @@
     "dataloader": {
         "num_workers": 0,
         "pin_memory": true,
-        "precache": true
+        "shard_size": 10
     },
 
     "device": {
