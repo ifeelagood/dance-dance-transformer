@@ -65,12 +65,96 @@ def has_info_changed() -> bool:
 
     return current_info["shard"] == generated_info["shard"] and current_info["audio"] == generated_info["audio"]
 
+class StatsRecorder:
+    """Accumulate normalisation statistics across mini-batches."""
+    def __init__(self, dim : tuple):
+        self.dim = dim
+        self.n_observations = None
+        self.n_dimensions = None
+
+    def update(self, data : torch.Tensor):
+        # initialise stats and dimensions on first batch
+        if self.n_observations is None:
+            self.mean = data.mean(dim=self.dim, keepdim=True)
+            self.std = data.std(dim=self.dim, keepdim=True)
+            self.n_observations = data.shape[0]
+            self.n_dimensions = data.shape[1]
+
+            return None, None
+
+        else:
+            if data.shape[1] != self.n_dimensions:
+                raise ValueError("Data dimensions do not match previous observations")
+
+            # calculate minibatch mean
+            new_mean = data.mean(dim=self.dim, keepdim=True)
+            new_std = data.std(dim=self.dim, keepdim=True)
+
+            # update number of observations
+            m = float(self.n_observations)
+            n = data.shape[0]
+
+            # save old mean and std
+            old_mean = self.mean
+            old_std = self.std
+
+            self.mean = m/(m+n)*old_mean + n/(m+n)*new_mean # update running mean
+            self.std  = m/(m+n)*old_std**2 + n/(m+n)*new_std**2 +m*n/(m+n)**2 * (old_mean - new_mean)**2 # update running variance
+            self.std  = torch.sqrt(self.std)
+
+            # update num observations
+            self.n_observations += n
+
+            # return the difference between the old and new
+            mean_delta = torch.sum(torch.abs(self.mean - old_mean)).item()
+            std_delta = torch.sum(torch.abs(self.std - old_std)).item()
+
+            return mean_delta, std_delta
+
+    def save(self, path, squeeze=True):
+        mean = self.mean.numpy()
+        std = self.std.numpy()
+
+        if squeeze:
+            mean = np.squeeze(mean, axis=0)
+            std = np.squeeze(std, axis=0)
+
+        np.savez_compressed(path, mean=mean, std=std)
+
+
+def analyse_dataset():
+    # set normalise to false
+    config.audio.normalize = False
+
+    # create recorder
+    recorder = StatsRecorder(dim=(0, 1, 3)) 
+
+    dataset = get_dataset(split="train", batch_size=512)
+
+    try:
+        print("Recording stats (interrupt to save)")
+        pbar = tqdm.tqdm(dataset, desc="Anaylsing Dataset")
+        for batch in pbar:
+            features = batch[0]
+            mean_delta, std_delta = recorder.update(features)
+
+            pbar.set_postfix({"Δmean": mean_delta, "Δstd": std_delta})
+            
+        pbar.close()
+        recorder.save(config.paths.stats)
+    
+    except KeyboardInterrupt:
+        print("Δmean={mean_delta}\tΔstd={std_delta}")
+        print("Recieved Keyboard interrupt. saving...")
+
+        recorder.save(config.paths.stats)
+        return 
+
 
 def generate_shards(manifest : dict, split : str):
     """Generate shards for the dataset."""
 
     assert split in ("train", "valid"), "Split must be either 'train' or 'valid'"
-
     dataset_path = config.paths.shards / get_shard_filename(split)
 
     sink = wds.ShardWriter(str(dataset_path), maxcount=config.dataset.shard.size)
@@ -150,7 +234,7 @@ def sample_iterator(src):
 
 
 def get_dataset(split, batch_size=None):
-    shards = list(map(str, config.paths.shards.glob(f"{split}-" + "[0-9]" * 6 + ".tar")))
+    shards = list(map(str, config.paths.shards.glob(f"{split}-" + "[0-9]" * config.dataset.shard.zero_pad + ".tar")))
 
     dataset = wds.WebDataset(shards, nodesplitter=wds.split_by_node)
     dataset = dataset.compose(wds.split_by_worker)
@@ -164,11 +248,7 @@ def get_dataset(split, batch_size=None):
     return dataset
 
 if __name__ == "__main__":
-    if not config.paths.shards.exists():
-        config.paths.shards.mkdir()
-
     train_manifest, valid_manifest = train_valid_split()
-    
     train_dataset = get_dataset("valid")
 
     print("Train dataset:")

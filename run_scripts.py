@@ -10,7 +10,7 @@ import threading
 
 from manifest import create_manifest
 
-from dataset import train_valid_split, generate_shards, delete_shards
+from dataset import train_valid_split, generate_shards, delete_shards, analyse_dataset
 from pyscripts import *
 from config import config
 
@@ -50,6 +50,9 @@ def unpack_script(args):
 
 def manifest_script(args):
     create_manifest(config)
+
+def analyse_script(args):
+    analyse_dataset()
 
 def generate_script(args):
     # create webdataset path
@@ -94,6 +97,7 @@ def run(args):
         "download": download_script,
         "unpack": unpack_script,
         "manifest": manifest_script,
+        "analyse": analyse_script,
         "generate": generate_script
     }
 
@@ -103,7 +107,7 @@ def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", type=str, choices=["all", "download", "unpack", "manifest", "generate"], help="Action to perform.")
+    parser.add_argument("action", type=str, choices=["all", "download", "unpack", "manifest", "analyse", "generate"], help="Action to perform.")
     
     args = parser.parse_args()
     
