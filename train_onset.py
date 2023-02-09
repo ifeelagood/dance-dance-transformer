@@ -1,3 +1,5 @@
+import argparse
+import json
 
 import torch 
 import torch.nn.functional as F
@@ -7,14 +9,16 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Learning
 
 from torchmetrics.classification import BinaryAUROC, BinaryAccuracy, BinaryF1Score, BinaryPrecision, BinaryRecall
 import torchmetrics.functional as M
+
+import optuna
+from optuna.integration import PyTorchLightningPruningCallback
+
 import matplotlib.pyplot as plt
 
-from dataset import OnsetDataset, train_valid_split, worker_init_fn
-import time
-import argparse
+import webdataset as wds
 
 
-
+from dataset import get_dataset
 from config import config
 from models.onset import LSTM_A, CNN_A, Classifier
 
@@ -104,50 +108,30 @@ class OnsetLightningModule(pl.LightningModule):
         y_hat = self.forward(features, difficulty)
         loss = F.binary_cross_entropy(y_hat, y)
         
-        # compute metrics
-        precision = self.binary_precision(y_hat, y)
-        recall = self.binary_recall(y_hat, y)    
-    
-        # logging
-        self.log("train/step_loss", loss)
-        self.log("train/step_precision", precision)
-        self.log("train/step_recall", recall)
-        
-        return {"loss": loss, "y_hat": y_hat, "y": y}
-
-    def training_epoch_end(self, outputs):
-        loss = torch.stack([x["loss"] for x in outputs]).mean()
-        y_hat = torch.cat([x["y_hat"] for x in outputs])
-        y = torch.cat([x["y"] for x in outputs])
-        
-        # epoch metrics
-        acc = self.binary_accuracy(y_hat, y)
-        binary_f1_score = self.binary_f1_score(y_hat, y)
-        binary_precision = self.binary_precision(y_hat, y)
-        binary_recall = self.binary_recall(y_hat, y)
 
         # logging
-        self.log("train/epoch_loss", loss)
-        self.log("train/epoch_acc", acc)
-        self.log("train/epoch_f1_score", binary_f1_score)
-        self.log("train/epoch_precision", binary_precision)
-        self.log("train/epoch_recall", binary_recall)
-    
+        self.log("train/loss", loss)
+        self.log("train/accuracy",  self.binary_accuracy(y_hat, y))
+        self.log("train/precision", self.binary_precision(y_hat, y))
+        self.log("train/recall", self.binary_recall(y_hat, y))
+        self.log("train/f1", self.binary_f1_score(y_hat, y))
+        
+        return loss
+
 
     def validation_step(self, batch, batch_idx):
         features, difficulty, y = batch
         y_hat = self.forward(features, difficulty)
         loss = F.binary_cross_entropy(y_hat, y)
             
-        # compute metrics
-        precision = self.binary_precision(y_hat, y)
-        recall = self.binary_recall(y_hat, y)
-        
         # logging
-        self.log("valid/step_loss", loss)
-        self.log("valid/step_precision", precision)
-        self.log("valid/step_recall", recall)
+        self.log("valid/loss", loss)
+        self.log("valid/accuracy",  self.binary_accuracy(y_hat, y))
+        self.log("valid/precision", self.binary_precision(y_hat, y))
+        self.log("valid/recall", self.binary_recall(y_hat, y))
+        self.log("valid/f1", self.binary_f1_score(y_hat, y))
         
+    
         return {"loss": loss, "y_hat": y_hat, "y": y}
 
     def validation_epoch_end(self, outputs):
@@ -155,19 +139,10 @@ class OnsetLightningModule(pl.LightningModule):
         y_hat = torch.cat([x["y_hat"] for x in outputs])
         y = torch.cat([x["y"] for x in outputs])
 
-        # compute metrics
-        acc = self.binary_accuracy(y_hat, y)
-        f1_score = self.binary_f1_score(y_hat, y)
-        precision = self.binary_precision(y_hat, y)
-        recall = self.binary_recall(y_hat, y)
-    
         # logging
         self.log("valid/epoch_loss", loss)
-        self.log("valid/epoch_acc", acc)
-        self.log("valid/epoch_f1_score", f1_score)
-        self.log("valid/epoch_precision", precision)
-        self.log("valid/epoch_recall", recall)
-
+        self.log("valid/epoch_accuracy",  self.binary_accuracy(y_hat, y))
+        self.log("valid/epoch_f1", self.binary_f1_score(y_hat, y))
 
     def configure_optimizers(self):
         kwargs = {"lr": self.learning_rate, "weight_decay": self.weight_decay}
@@ -181,13 +156,24 @@ class OnsetLightningModule(pl.LightningModule):
         return optimizer
 
 def get_dataloaders(batch_size, num_workers=0, **kwargs):
-    train_manifest, valid_manifest = train_valid_split()
-
-    train_dataset = OnsetDataset(train_manifest)
-    valid_dataset = OnsetDataset(valid_manifest)
+    train_dataset = get_dataset("train", batch_size=batch_size)
+    valid_dataset = get_dataset("valid", batch_size=batch_size)
     
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, **kwargs)
-    valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=batch_size, num_workers=num_workers, **kwargs)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=None,
+        num_workers=num_workers,
+        **kwargs
+    )
+    
+    valid_loader = torch.utils.data.DataLoader(
+        valid_dataset,
+        batch_size=None,
+        num_workers=num_workers,
+        **kwargs
+    )
+
+    
 
     return train_loader, valid_loader
 
@@ -223,9 +209,8 @@ def train(args, train_loader, valid_loader):
         checkpoint_callback = ModelCheckpoint(
             monitor=config.callbacks.checkpoint.monitor,
             dirpath=config.paths.checkpoints,
-            filename="onset-{epoch:02d}-{val_loss:.5f}",
             save_top_k=args.top_k,
-            mode="min",
+            mode=config.callbacks.checkpoint.mode,
         )
 
         callbacks.append(checkpoint_callback)
@@ -234,7 +219,7 @@ def train(args, train_loader, valid_loader):
         early_stopping = EarlyStopping(
             monitor=config.callbacks.early_stopping.monitor,
             patience=config.callbacks.early_stopping.patience,
-            mode="min",
+            mode=config.callbacks.early_stopping.mode
         )
     
         callbacks.append(early_stopping)
@@ -246,9 +231,9 @@ def train(args, train_loader, valid_loader):
         max_epochs=args.epochs,
         logger=logger,
         callbacks=callbacks,
-        limit_train_batches=10000,
         val_check_interval=4000,
         gradient_clip_val=args.gradient_clip,
+        log_every_n_steps=100
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
@@ -258,20 +243,69 @@ def train(args, train_loader, valid_loader):
         best_model_path = trainer.checkpoint_callback.best_model_path
         print(f"Best model path: {best_model_path}")
         
-    
-
     return trainer, model
 
+def objective(trial):
+    # get trial hyperparameters
+    hp = {
+        "learning_rate": trial.suggest_loguniform("learning_rate", 1e-5, 1.0),
+        "weight_decay": trial.suggest_loguniform("weight_decay", 1e-5, 1.0),
+        "momentum": trial.suggest_uniform("momentum", 0.0, 1.0),
+        "dropout": trial.suggest_uniform("dropout", 0.2, 1.0),
+        "optimizer": trial.suggest_categorical("optimizer", ["SGD", "Adam", "AdamW"]),
+#        "bidirectional": trial.suggest_categorical("bidirectional", [True, False]),
+        "gradient_clip": trial.suggest_uniform("gradient_clip", 0.0, 10.0),
+    }
+
+    
+    model = OnsetLightningModule(
+        learning_rate=hp["learning_rate"],
+        weight_decay=hp["weight_decay"],
+        momentum=hp["momentum"],
+        dropout=hp["dropout"],
+        optimizer=hp["optimizer"],
+        bidirectional=False,
+        hidden_size=200,
+        num_layers=2,
+    )
+
+    
+    train_loader, valid_loader = get_dataloaders(batch_size=config.hyperparameters.batch_size, num_workers=config.dataloader.num_workers, pin_memory=config.dataloader.pin_memory)
+ 
+    trainer = pl.Trainer(
+        accelerator=config.device.accelerator,
+        devices=config.device.devices,
+
+        max_epochs=10,
+        logger=True,
+        callbacks=[PyTorchLightningPruningCallback(trial, monitor=config.tuning.pruning.monitor)],
+        val_check_interval=4000,
+        gradient_clip_val=hp["gradient_clip"],
+        log_every_n_steps=100
+    )
+    
+    trainer.logger.log_hyperparams(hp)
+    
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+
+    return trainer.callback_metrics[config.tuning.monitor]
+
+ 
 def get_args():
     parser = argparse.ArgumentParser(description="Train the onset detection model.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # README - ArgumentsDefaultsHelpFormatter requires all arguments use a help string, even if it is empty
+
+    # train/optimise
+    parser.add_argument("action", type=str, choices=["train", "tune"], help="Whether to train or tune the model.")
+
 
     # create groups
     p_hp = parser.add_argument_group("hyperparameters")
     p_dataloader = parser.add_argument_group("dataloader")
     p_callbacks = parser.add_argument_group("callbacks")
     p_device = parser.add_argument_group("device")
+    p_tuning = parser.add_argument_group("tuning")
     
     empty = " - "
     
@@ -300,14 +334,52 @@ def get_args():
     p_callbacks.add_argument("--top-k", type=int, default=config.callbacks.checkpoint.top_k, help=empty)
     p_callbacks.add_argument("--patience", type=int, default=config.callbacks.early_stopping.patience, help=empty)
     
+    # tuning
+    p_tuning.add_argument("--n-trials", type=int, default=config.tuning.n_trials, help=empty)
+    p_tuning.add_argument("--n-jobs", type=int, default=config.tuning.n_jobs, help=empty)
+    p_tuning.add_argument("--timeout", type=int, default=config.tuning.timeout, help=empty)
+    p_tuning.add_argument("--max-epochs", type=int, default=config.tuning.max_epochs, help=empty)
+    p_tuning.add_argument("--direction", type=str, default=config.tuning.direction, help=empty)
+    p_tuning.add_argument("--prune", type=bool, default=config.tuning.pruning.enable, help="Enable early pruning of unpromising trials.")
+    p_tuning.add_argument("--pruning-monitor", type=str, default=config.tuning.pruning.monitor, help=empty)
+    p_tuning.add_argument("--monitor", type=str, default=config.tuning.monitor, help=empty)
+
+
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = get_args()
 
-
-    train_loader, valid_loader = get_dataloaders(
-        batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=args.pin_memory
-    )
+    if args.action == "train":
+        train_loader, valid_loader = get_dataloaders(
+            batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=args.pin_memory
+        )
+        
+        trainer, model = train(args, train_loader, valid_loader)
     
-    trainer, model = train(args, train_loader, valid_loader)
+    elif args.action == "tune":
+
+        pruner = optuna.pruners.MedianPruner() if args.prune else None
+    
+        study = optuna.create_study(
+            direction=args.direction,
+            pruner=pruner,
+            study_name="onset_detection"
+        )
+        
+        study.optimize(
+            objective,
+            n_trials=args.n_trials,
+            n_jobs=args.n_jobs,
+            timeout=args.timeout
+        )
+        
+        print("Best trial:")
+        trial = study.best_trial
+
+        print("  Value: {}".format(trial.value))
+
+        # save the best trial
+        with open("best_trial.json", "w") as f:
+            json.dump(trial.params, f, indent=4)
+        

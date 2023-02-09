@@ -130,8 +130,8 @@ def sample_iterator(src):
             raise FileNotFoundError("config.audio.normalize is True, but stats file does not exist. Please generate with utils.analyse_dataset()")
 
         with np.load(config.paths.stats) as stats:
-            mean = torch.from_numpy(stats["mean"])
-            std = torch.from_numpy(stats["std"])
+            mean = torch.from_numpy(stats["mean"]).squeeze(0)
+            std = torch.from_numpy(stats["std"]).squeeze(0)
 
     for (features, onsets, difficulties, num_frames) in src:    
         for i in range(difficulties.shape[0]):
@@ -149,7 +149,7 @@ def sample_iterator(src):
 
                 yield feature, difficulty, onset
 
-def get_dataset(split):
+def get_dataset(split, batch_size=None):
     shards = list(map(str, config.paths.webdataset.glob(f"{split}-" + "[0-9]" * 6 + ".tar")))
 
     dataset = wds.WebDataset(shards, nodesplitter=wds.split_by_node)
@@ -157,9 +157,11 @@ def get_dataset(split):
     dataset = dataset.decode()
     dataset = dataset.to_tuple("features.pth", "onsets.pth", "difficulties.pth", "num_frames.cls")
     dataset = dataset.compose(sample_iterator)
+    
+    if batch_size:
+        dataset = dataset.batched(batch_size)
 
     return dataset
-
 
 if __name__ == "__main__":
     if not config.paths.webdataset.exists():
@@ -167,20 +169,13 @@ if __name__ == "__main__":
 
     train_manifest, valid_manifest = train_valid_split()
     
-    # if not is_dataset_updated("train"):
-    #     create_webdataset(train_manifest, "train")
+    create_webdataset(train_manifest, "train")
+    create_webdataset(valid_manifest, "valid")
 
-    # if not is_dataset_updated("valid"):
-    #     create_webdataset(valid_manifest, "valid")
+    train_dataset = get_dataset("train")
+    valid_dataset = get_dataset("valid")
     
-    train_dataset = get_dataset("valid")
-
-    print("Train dataset:")
-
-    with open(config.paths.webdataset / "train.json", 'r') as f:
-        dataset_info = json.load(f)
-
-
-    dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, num_workers=0)
-
-    
+    for i, (feature, difficulty, onset) in tqdm.tqdm(enumerate(train_dataset)):
+        print(feature.shape, difficulty.shape, onset.shape)
+        if i == 10:
+            break

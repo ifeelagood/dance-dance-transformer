@@ -40,7 +40,7 @@
         "fmax": 16000.0,
         "log": true,
         "log_eps": 1e-6,
-        "normalize": false
+        "normalize": true
     },
         
     "charts": {
@@ -71,20 +71,21 @@
         "early_stopping":
         {
             "enable": false,
-            "monitor": "valid/step_loss",
+            "monitor": "valid/loss",
             "mode": "min",
             "patience": 20
         },
 
         "checkpoint": {
             "enable": true,
-            "monitor": "valid/epoch_precision",
-            "top_k": 3
+            "monitor": "valid/epoch_f1",
+            "top_k": 3,
+            "mode": "max"
         }
     },
 
     "dataloader": {
-        "num_workers": 0,
+        "num_workers": 2,
         "pin_memory": true,
         "shard_size": 10
     },
@@ -93,5 +94,20 @@
         "accelerator": "gpu",
         "devices": 1,
         "strategy": null
+    },
+
+    "tuning": {
+        "n_trials": 100,
+        "n_jobs": 1,
+        "timeout": 600,
+        "max_epochs": 10,
+
+        "direction": "maximize",
+        "monitor": "valid/f1",
+        "pruning": {
+            "enable": false,
+            "monitor": "valid/f1",
+            "mode": "max"
+        }
     }
 }
