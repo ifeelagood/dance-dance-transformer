@@ -1,10 +1,6 @@
 #!/usr/bin/python
 
-
-
 import os
-import shutil
-import pathlib
 import argparse
 import threading 
 
