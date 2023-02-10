@@ -19,16 +19,13 @@ import matplotlib.pyplot as plt
 
 import webdataset as wds
 
-
-from dataset import get_dataset
+from dataset import get_dataset, get_dataloader
 from config import config
 from models.onset import LSTM_A, CNN_A, Classifier
-
 
 # catch warnings 
 import warnings 
 warnings.filterwarnings("ignore")
-
 
 # for CNNs
 torch.backends.cudnn.benchmark = True
@@ -157,28 +154,6 @@ class OnsetLightningModule(pl.LightningModule):
         
         return optimizer
 
-def get_dataloaders(batch_size, num_workers=0, **kwargs):
-    train_dataset = get_dataset("train", batch_size=batch_size)
-    valid_dataset = get_dataset("valid", batch_size=batch_size)
-    
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=None,
-        num_workers=num_workers,
-        **kwargs
-    )
-    
-    valid_loader = torch.utils.data.DataLoader(
-        valid_dataset,
-        batch_size=None,
-        num_workers=num_workers,
-        **kwargs
-    )
-    
-
-    return train_loader, valid_loader
-
-
 def train(args, train_loader, valid_loader):
     # init wandb
     wandb.init(project="onset", entity="ifag")
@@ -198,7 +173,7 @@ def train(args, train_loader, valid_loader):
         "context_radius": config.onset.context_radius,
     })
     
-    
+    # define model
     model = OnsetLightningModule(
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
@@ -209,8 +184,8 @@ def train(args, train_loader, valid_loader):
         num_layers=2,
         bidirectional=False,
     )
-
-
+    
+    # define logger
     logger = WandbLogger(project="onset", entity="ifag", log_model=True)
     
     callbacks = []
@@ -262,7 +237,6 @@ def train(args, train_loader, valid_loader):
     return trainer, model
 
 def find_lr(args, train_loader, valid_loader):
-    
 
     trainer = pl.Trainer(
         accelerator=args.accelerator,
@@ -298,8 +272,6 @@ def find_lr(args, train_loader, valid_loader):
 
 def objective(trial):
     wandb.init(project="onset", entity="ifag")
-    
-
     
     # get trial hyperparameters
     hp = {
@@ -340,9 +312,9 @@ def objective(trial):
         num_layers=2,
     )
 
-    
-    train_loader, valid_loader = get_dataloaders(batch_size=config.hyperparameters.batch_size, num_workers=config.dataloader.num_workers, pin_memory=config.dataloader.pin_memory)
- 
+    train_loader = get_dataloader(get_dataset("train"), batch_size=hp["batch_size"], batched_dataloder=True, pin_memory=config.dataloader.pin_memory, num_workers=config.dataloader.num_workers)
+    valid_loader = get_dataloader(get_dataset("valid"), batch_size=hp["batch_size"], batched_dataloder=True, pin_memory=config.dataloader.pin_memory, num_workers=config.dataloader.num_workers)
+
     logger = WandbLogger(name="tune", project="onset", entity="ifag", log_model=True)
  
     trainer = pl.Trainer(
@@ -419,16 +391,25 @@ def get_args():
 
     return parser.parse_args()
 
+def get_dataloaders(args, batched_dataloader=False):
+
+    train_dataset = get_dataset("train")
+    valid_dataset = get_dataset("valid")
+
+    train_loader = get_dataloader(train_dataset, batch_size=args.batch_size, batched_dataloder=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
+    valid_loader = get_dataloader(valid_dataset, batch_size=args.batch_size, batched_dataloder=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
+
+    return train_loader, valid_loader
+
+
 if __name__ == "__main__":
     args = get_args()
 
     if args.action == "train":
-        train_loader, valid_loader = get_dataloaders(
-            batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=args.pin_memory
-        )
-        
+        train_loader, valid_loader = get_dataloaders(args, batched_dataloader=False)
+
         trainer, model = train(args, train_loader, valid_loader)
-    
+
     elif args.action == "tune":
 
         pruner = optuna.pruners.MedianPruner() if args.prune else None
@@ -456,8 +437,5 @@ if __name__ == "__main__":
             json.dump(trial.params, f, indent=4)
         
     elif args.action == "find_lr":
-        train_loader, valid_loader = get_dataloaders(
-            batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=args.pin_memory
-        )
-        
+        train_loader, valid_loader = get_dataloaders(args, batched_dataloader=False)
         find_lr(args, train_loader, valid_loader)

@@ -165,7 +165,6 @@ def get_dataloader(dataset, batch_size, batched_dataloder=True, **kwargs):
     return dataloader
 
 if __name__ == "__main__":
-
     dataset = get_dataset("train")
 
     dataloader = get_dataloader(dataset, batch_size=256, batched_dataloder=False, num_workers=config.dataloader.num_workers)
