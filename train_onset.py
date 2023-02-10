@@ -174,7 +174,6 @@ def get_dataloaders(batch_size, num_workers=0, **kwargs):
         num_workers=num_workers,
         **kwargs
     )
-
     
 
     return train_loader, valid_loader
@@ -213,7 +212,6 @@ def train(args, train_loader, valid_loader):
 
 
     logger = WandbLogger(project="onset", entity="ifag", log_model=True)
-    
     
     callbacks = []
 
