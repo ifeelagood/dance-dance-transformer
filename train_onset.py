@@ -241,6 +241,7 @@ def find_lr(args, train_loader, valid_loader):
     trainer = pl.Trainer(
         accelerator=args.accelerator,
         devices=args.devices,
+        strategy=config.device.strategy,
         gradient_clip_val=args.gradient_clip,
         accumulate_grad_batches=args.accumulate_grad_batches,
         log_every_n_steps=100,
@@ -320,6 +321,7 @@ def objective(trial):
     trainer = pl.Trainer(
         accelerator=config.device.accelerator,
         devices=config.device.devices,
+        strategy=config.device.strategy,
         max_epochs=args.max_epochs,
         logger=logger,
         callbacks=[PyTorchLightningPruningCallback(trial, monitor=config.tuning.pruning.monitor)],
