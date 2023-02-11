@@ -372,7 +372,7 @@ def get_args():
     # device
     p_device.add_argument("--accelerator", type=str, default=config.device.accelerator, help=empty)
     p_device.add_argument("--devices", type=int, default=config.device.devices, help=empty)
-    p_device.add_argument("--strategy", type=int, default=config.device.strategy, help=empty)
+    p_device.add_argument("--strategy", type=str, default=config.device.strategy, help=empty)
     
     # callbacks
     p_callbacks.add_argument("--checkpoint", type=bool, default=config.callbacks.checkpoint.enable, help=empty)
